@@ -1,5 +1,7 @@
 import sys
 import pexpect
+from pipedream.director import Director
+from pipedream.cache import SmartCache
 if sys.platform == 'win32':
     from pexpect.popen_spawn import PopenSpawn
 
@@ -8,6 +10,9 @@ class PipeDream:
         self.command = command
         self.process = None
         self.prompt_pattern = r'[>:]\s*$' 
+
+        self.director = Director()
+        self.cache = SmartCache()
 
     def start(self):
         print(f"[*] Launching: {self.command}")
@@ -31,11 +36,11 @@ class PipeDream:
                 
         except pexpect.EOF:
             print("\n[*] Game process ended.")
-        except KeyboardInterrupt:
-            print("\n[*] Stopping PipeDream.")
-            # PopenSpawn doesn't have close(), uses wait() usually, 
-            if self.process:
-                self.process.terminate()
+        if self.process:
+                if sys.platform == 'win32':
+                    self.process.proc.terminate()
+                else:
+                    self.process.terminate()
 
     def read_until_prompt(self):
         """
@@ -67,9 +72,28 @@ class PipeDream:
         return text
 
     def trigger_pipeline(self, text):
-        """Placeholder for the 'Director' logic"""
-        #captured the specific chunk we need
-        print(f"\n[PIPEDREAM] Captured for Image Gen: '{text[:50]}...'")
+        """
+        Orchestrates the Text -> Description -> Image -> Display flow
+        """
+        if len(text.strip()) < 25: 
+            return
+
+        print(f"\n[PIPEDREAM] Analyzing Scene...")
+        
+        # Get Visual Description (The Director)
+        visual_prompt = self.director.describe_scene(text)
+        if not visual_prompt:
+            print("   > No visual changes detected.")
+            return
+            
+        print(f"   > Prompt: {visual_prompt}")
+
+        # Check Cache / Generate Image (The Cache)
+        image_path = self.cache.get_image(visual_prompt)
+        
+        if image_path:
+            print(f"   > Image ready at: {image_path}")
+            # TODO: add a window to display this image path
 
 if __name__ == "__main__":
     engine = PipeDream("python -u games/mock_game.py")
