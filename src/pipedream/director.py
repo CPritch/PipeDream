@@ -9,7 +9,7 @@ warnings.filterwarnings("ignore", category=UserWarning, module="pydantic")
 
 class Director:
     def __init__(self):
-        self.model = os.getenv("LLM_MODEL", "gemini-2.5-flash")
+        self.model = os.getenv("LLM_MODEL", "gemini/gemini-2.5-flash")
         
     def describe_scene(self, raw_text):
         """
