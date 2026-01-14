@@ -1,10 +1,10 @@
 # PipeDream
 
-PipeDream will be a utility that adds a visual dimension to text-based interactive fiction. It operates by capturing the standard output of terminal games and generating real-time illustrations of the current scene using generative AI.
+PipeDream is a utility that adds a visual dimension to text-based interactive fiction. It operates by capturing the standard output of terminal games and generating real-time illustrations of the current scene using generative AI.
 
 ## Mission
 
-Text adventures offer infinite resolution for the imagination, but modern generative models allow us to see those worlds. PipeDream bridges this gap by acting as a universal adapter between legacy text engines and modern image generation APIs.
+Text adventures offer infinite worlds for the imagination, but modern generative models can add a fun visual layer to old classics. PipeDream bridges this gap by acting as a universal adapter between legacy text engines and modern image generation APIs.
 
 ## Core Goals
 
@@ -19,6 +19,29 @@ Text adventures offer infinite resolution for the imagination, but modern genera
 
 ## Current Status
 
-**Status: Scaffold / Concept**
+**Status: Input Scaffold Functional**
 
-This project is currently in the initial scaffolding phase. The architecture is being defined to support modular input streams (game engines) and modular output drivers (image generation APIs).
+The core engine loop (`src/pipedream/engine.py`) is implemented. It currently:
+* Spawns game processes via `pexpect` (supports Linux/macOS and Windows).
+* Captures standard output from the game.
+* Cleans the output and isolates the narrative text.
+* Prepares the text for the (upcoming) image generation pipeline.
+
+## Quick Start (Dev)
+
+To test the engine loop with the included mock Zork game:
+
+1. Install dependencies:
+```bash
+   pip install .
+
+```
+
+2. Run the engine:
+```bash
+python src/pipedream/engine.py
+
+```
+
+
+3. Type commands (e.g., `look`, `west`) to see the engine capture and clean the output.
