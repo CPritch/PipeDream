@@ -1,7 +1,10 @@
 import sys
 import pexpect
+from multiprocessing import Process, Queue
 from pipedream.director import Director
 from pipedream.cache import SmartCache
+from pipedream.viewer import viewer_process # Import our new function
+
 if sys.platform == 'win32':
     from pexpect.popen_spawn import PopenSpawn
 
@@ -13,6 +16,10 @@ class PipeDream:
 
         self.director = Director()
         self.cache = SmartCache()
+
+        self.image_queue = Queue()
+        self.viewer = Process(target=viewer_process, args=(self.image_queue,))
+        self.viewer.start()
 
     def start(self):
         print(f"[*] Launching: {self.command}")
@@ -36,11 +43,23 @@ class PipeDream:
                 
         except pexpect.EOF:
             print("\n[*] Game process ended.")
+        except KeyboardInterrupt:
+            pass # Handle cleanup below
+        finally:
+            self.cleanup()
+
+    def cleanup(self):
+        print("\n[*] Stopping PipeDream...")
+        
         if self.process:
-                if sys.platform == 'win32':
-                    self.process.proc.terminate()
-                else:
-                    self.process.terminate()
+            if sys.platform == 'win32':
+                self.process.proc.terminate()
+            else:
+                self.process.terminate()
+        
+        self.image_queue.put(None)
+        self.viewer.join()
+        print("[*] Cleanup complete.")
 
     def read_until_prompt(self):
         """
@@ -81,19 +100,24 @@ class PipeDream:
         print(f"\n[PIPEDREAM] Analyzing Scene...")
         
         # Get Visual Description (The Director)
+        cached_path = self.cache.lookup(text)
+        if cached_path:
+            print(f"   > Cache Hit! Skipping LLM and Generation.")
+            self.image_queue.put(cached_path)
+            return
+        
         visual_prompt = self.director.describe_scene(text)
         if not visual_prompt:
             print("   > No visual changes detected.")
             return
-            
+        
         print(f"   > Prompt: {visual_prompt}")
 
-        # Check Cache / Generate Image (The Cache)
-        image_path = self.cache.get_image(visual_prompt)
-        
+        image_path = self.cache.generate(text, visual_prompt)
+
         if image_path:
             print(f"   > Image ready at: {image_path}")
-            # TODO: add a window to display this image path
+            self.image_queue.put(image_path)
 
 if __name__ == "__main__":
     engine = PipeDream("python -u games/mock_game.py")

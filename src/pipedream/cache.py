@@ -1,7 +1,11 @@
 import os
 import json
 import hashlib
+import requests
 from litellm import image_generation
+from dotenv import load_dotenv
+
+load_dotenv()
 
 class SmartCache:
     def __init__(self, cache_dir="cache"):
@@ -9,8 +13,8 @@ class SmartCache:
         self.images_dir = os.path.join(cache_dir, "images")
         self.map_file = os.path.join(cache_dir, "mapping.json")
         self.memory = {}
+        self.model = os.getenv("IMAGE_MODEL", "gemini/gemini-2.5-flash-image")
         
-        # Ensure directories exist
         os.makedirs(self.images_dir, exist_ok=True)
         self._load_map()
 
@@ -23,47 +27,52 @@ class SmartCache:
         with open(self.map_file, 'w') as f:
             json.dump(self.memory, f, indent=2)
 
-    def get_image(self, prompt):
-        """
-        Returns path to image. 
-        If cached -> returns local path.
-        If new -> Generates (mock for now), saves, returns path.
-        """
-        # Create a stable hash of the prompt
-        prompt_hash = hashlib.md5(prompt.encode('utf-8')).hexdigest()
+    def _get_hash(self, text):
+        return hashlib.md5(text.encode('utf-8')).hexdigest()
 
-        if prompt_hash in self.memory:
-            print(f"[*] Cache Hit: {prompt[:30]}...")
-            return self.memory[prompt_hash]
-
-        print(f"[*] Cache Miss. Generating for: {prompt[:30]}...")
+    def lookup(self, raw_text):
+        """
+        Check if we already have an image for this EXACT game text.
+        Returns: Path to image (str) or None.
+        """
+        text_hash = self._get_hash(raw_text)
         
-        # --- IMAGE GENERATION LOGIC ---
-        image_path = self._generate_and_save(prompt, prompt_hash)
-        # ------------------------------
+        if text_hash in self.memory:
+            image_path = self.memory[text_hash]
+            if os.path.exists(image_path):
+                print(f"[*] Cache Hit: {raw_text[:30]}...")
+                return image_path
+        
+        return None
 
-        self.memory[prompt_hash] = image_path
-        self._save_map()
-        return image_path
-
-    def _generate_and_save(self, prompt, file_hash):
-        filename = f"{file_hash}.png"
+    def generate(self, raw_text, visual_prompt):
+        """
+        Generates the image, saves it using the RAW TEXT hash, and returns path.
+        """
+        text_hash = self._get_hash(raw_text)
+        filename = f"{text_hash}.png"
         filepath = os.path.join(self.images_dir, filename)
 
+        print(f"[*] Generating Image for: {visual_prompt[:40]}...")
+
         try:
-            # TODO: UNCOMMENT THIS BLOCK FOR REAL GENERATION
-            # response = image_generation(
-            #     model=os.getenv("IMAGE_MODEL", "dall-e-3"),
-            #     prompt=prompt
-            # )
-            # image_url = response.data[0].url
-            # For now, create a dummy file to prove the loop works
-            with open(filepath, 'w') as f:
-                f.write("Placeholder Image Data")
+            response = image_generation(
+                model=self.model,
+                prompt=visual_prompt
+            )
+            
+            image_url = response.data[0].url
+            
+            print(f"   > Downloading from {self.model}...")
+            img_data = requests.get(image_url).content
+            with open(filepath, 'wb') as f:
+                f.write(img_data)
                 
-            # In real implementation: Download image_url content to filepath here
+            self.memory[text_hash] = filepath
+            self._save_map()
             
             return filepath
+            
         except Exception as e:
-            print(f"[!] Gen Error: {e}")
+            print(f"[!] Image Gen Error: {e}")
             return None
