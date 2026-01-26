@@ -2,10 +2,6 @@
 
 PipeDream is a utility that adds a visual dimension to text-based interactive fiction. It operates by capturing the standard output of terminal games and generating real-time illustrations of the current scene using generative AI.
 
-## Mission
-
-Text adventures offer infinite resolution for the imagination, but modern generative models allow us to see those worlds. PipeDream bridges this gap by acting as a universal adapter between legacy text engines and modern image generation APIs.
-
 ## Core Goals
 
 1. **Universal Compatibility**
@@ -21,7 +17,7 @@ Text adventures offer infinite resolution for the imagination, but modern genera
 
 **Status: Functional Prototype**
 
-The pipeline is fully operational and generating live imagery.
+The test pipeline is somewhat operational and generating live imagery.
 
 * **Engine:** Captures game output via `pexpect`.
 * **Director:** Uses an LLM to interpret game text into visual prompts.
@@ -31,18 +27,18 @@ The pipeline is fully operational and generating live imagery.
 ## Quick Start (Dev)
 
 1. **Install dependencies:**
-   ```bash
+```bash
    pip install .
 
 ```
 
 2. **Configure Environment:**
 Create a `.env` file in the root directory. You need keys for both the LLM (Director) and the Image Generator.
+
 ```ini
 GEMINI_API_KEY=your_api_key_here
 LLM_MODEL=gemini/gemini-2.5-flash
 IMAGE_MODEL=gemini/gemini-2.5-flash-image
-
 ```
 
 
