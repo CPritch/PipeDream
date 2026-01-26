@@ -1,11 +1,12 @@
+import base64
 import os
 import json
 import hashlib
 import requests
-from litellm import image_generation
+from litellm import completion, image_generation
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 class SmartCache:
     def __init__(self, cache_dir="cache"):
@@ -14,6 +15,12 @@ class SmartCache:
         self.map_file = os.path.join(cache_dir, "mapping.json")
         self.memory = {}
         self.model = os.getenv("IMAGE_MODEL", "gemini/gemini-2.5-flash-image")
+        self.api_key = os.getenv("GEMINI_API_KEY")
+
+        if not self.api_key:
+            print(" [!] CRITICAL: GEMINI_API_KEY is missing from environment!")
+        else:
+            print(f" [DEBUG] Loaded API Key: {self.api_key[:5]}... (Length: {len(self.api_key)})")
         
         os.makedirs(self.images_dir, exist_ok=True)
         self._load_map()
@@ -53,25 +60,67 @@ class SmartCache:
         filename = f"{text_hash}.png"
         filepath = os.path.join(self.images_dir, filename)
 
-        print(f"[*] Generating Image for: {visual_prompt[:40]}...")
+        print(f"[*] Generating Image ({self.model})...")
 
         try:
-            response = image_generation(
-                model=self.model,
-                prompt=visual_prompt
-            )
-            
-            image_url = response.data[0].url
-            
-            print(f"   > Downloading from {self.model}...")
-            img_data = requests.get(image_url).content
-            with open(filepath, 'wb') as f:
-                f.write(img_data)
+            # GEMINI (AI Studio Route)
+            # Gemini image generation uses the completion endpoint with modalities.
+            if "gemini" in self.model.lower():
+                print("   > Using Gemini 'completion' route (AI Studio)...")
                 
-            self.memory[text_hash] = filepath
-            self._save_map()
-            
-            return filepath
+                call_model = self.model
+                if not call_model.startswith("gemini/"):
+                     call_model = f"gemini/{call_model}"
+
+                response = completion(
+                    model=call_model,
+                    messages=[{"role": "user", "content": visual_prompt}],
+                    modalities=["image", "text"],
+                    api_key=self.api_key
+                )
+                
+                img_data = None
+                message = response.choices[0].message
+                
+                if hasattr(message, "images") and message.images:
+                    first_image = message.images[0]
+                    
+                    if 'image_url' in first_image and 'url' in first_image['image_url']:
+                        url_data = first_image['image_url']['url']
+                        
+                        if "base64," in url_data:
+                            b64_data = url_data.split("base64,")[1]
+                        else:
+                            b64_data = url_data
+                            
+                        img_data = base64.b64decode(b64_data)
+
+                if img_data:
+                    with open(filepath, 'wb') as f:
+                        f.write(img_data)
+                    self.memory[text_hash] = filepath
+                    self._save_map()
+                    return filepath
+                else:
+                    print(f"[!] Parsing Failed. Could not find ['image_url']['url'] in: {message.images}")
+                    return None
+
+            # STANDARD (DALL-E, etc via image_generation)
+            else:
+                print("   > Using Standard 'image_generation' route...")
+                response = image_generation(
+                    model=self.model,
+                    prompt=visual_prompt
+                )
+                
+                image_url = response.data[0].url
+                img_data = requests.get(image_url).content
+                with open(filepath, 'wb') as f:
+                    f.write(img_data)
+                
+                self.memory[text_hash] = filepath
+                self._save_map()
+                return filepath
             
         except Exception as e:
             print(f"[!] Image Gen Error: {e}")
