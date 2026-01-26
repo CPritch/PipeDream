@@ -2,6 +2,8 @@
 
 PipeDream is a utility that adds a visual dimension to text-based interactive fiction. It operates by capturing the standard output of terminal games and generating real-time illustrations of the current scene using generative AI.
 
+![Alt text](/screenshots/screenshot-1.png?raw=true "Example run of adventure game.")
+
 ## Core Goals
 
 1. **Universal Compatibility**
@@ -64,7 +66,7 @@ pipedream-gui adventure
 
 You can wrap other interpreters (like Frotz) similarly:
 ```bash
-# Syntax: pipedream <command_to_run_game>
+# Syntax: pipedream-gui <command_to_run_game>
 pipedream-gui frotz games/zork1.z5
 ```
 
