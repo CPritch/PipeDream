@@ -16,11 +16,6 @@ class SmartCache:
         self.memory = {}
         self.model = os.getenv("IMAGE_MODEL", "gemini/gemini-2.5-flash-image")
         self.api_key = os.getenv("GEMINI_API_KEY")
-
-        if not self.api_key:
-            print(" [!] CRITICAL: GEMINI_API_KEY is missing from environment!")
-        else:
-            print(f" [DEBUG] Loaded API Key: {self.api_key[:5]}... (Length: {len(self.api_key)})")
         
         os.makedirs(self.images_dir, exist_ok=True)
         self._load_map()
