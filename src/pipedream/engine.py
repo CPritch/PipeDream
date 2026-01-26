@@ -1,4 +1,5 @@
 import sys
+import argparse
 import pexpect
 from multiprocessing import Process, Queue
 from pipedream.director import Director
@@ -119,6 +120,21 @@ class PipeDream:
             print(f"   > Image ready at: {image_path}")
             self.image_queue.put(image_path)
 
-if __name__ == "__main__":
-    engine = PipeDream("python -u games/mock_game.py")
+def main():
+    parser = argparse.ArgumentParser(description="PipeDream: AI Visualizer for Interactive Fiction")
+    
+    parser.add_argument('game_command', nargs=argparse.REMAINDER, help="The command to run the game (e.g., 'python games/mock_game.py' or 'frotz zork1.z5')")
+    
+    args = parser.parse_args()
+
+    if not args.game_command:
+        parser.print_help()
+        sys.exit(1)
+
+    full_command = " ".join(args.game_command)
+    
+    engine = PipeDream(full_command)
     engine.start()
+
+if __name__ == "__main__":
+    main()
