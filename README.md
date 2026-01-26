@@ -15,19 +15,19 @@ PipeDream is a utility that adds a visual dimension to text-based interactive fi
 
 ## Current Status
 
-**Status: Functional Prototype**
+**Status: Functional Prototype (GUI)**
 
-The test pipeline is somewhat operational and generating live imagery.
+The project now features a functional GUI that separates the game terminal from the visual output.
 
-* **Engine:** Captures game output via `pexpect`.
+* **Engine:** Captures game output via `pexpect` (Unix) or `Popen` (Windows).
 * **Director:** Uses an LLM to interpret game text into visual prompts.
 * **Generator:** Calls external image generation APIs (via `litellm`) and saves results to a local cache.
-* **Viewer:** A separate OpenCV process (`cv2`) monitors the queue and renders the generated images in a window alongside the terminal.
+* **Interface:** A PySide6 (Qt/QML) application providing a split-view experience: game terminal on the right, AI visualization on the left.
 
 ## Quick Start (Dev)
 
-1. **Install PipeDream:**
-Install the package in editable mode to register the `pipedream` command.
+### 1. Install Dependencies
+Install the package in editable mode to register the `pipedream-gui` command.
 ```bash
    pip install -e .
 ```
@@ -55,7 +55,7 @@ uv tool install adventure
 
 **Launch with PipeDream:**
 ```bash
-pipedream adventure
+pipedream-gui adventure
 ```
 
 
@@ -65,5 +65,10 @@ pipedream adventure
 You can wrap other interpreters (like Frotz) similarly:
 ```bash
 # Syntax: pipedream <command_to_run_game>
-pipedream frotz games/zork1.z5
+pipedream-gui frotz games/zork1.z5
 ```
+
+
+### Troubleshooting
+
+Windows "Shim" Errors: If you get errors running a Python game on Windows, try wrapping the command in cmd /c to force proper path resolution: `pipedream-gui cmd /c adventure`
