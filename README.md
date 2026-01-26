@@ -26,27 +26,44 @@ The test pipeline is somewhat operational and generating live imagery.
 
 ## Quick Start (Dev)
 
-1. **Install dependencies:**
+1. **Install PipeDream:**
+Install the package in editable mode to register the `pipedream` command.
 ```bash
-   pip install .
-
+   pip install -e .
 ```
 
 2. **Configure Environment:**
 Create a `.env` file in the root directory. You need keys for both the LLM (Director) and the Image Generator.
-
 ```ini
 GEMINI_API_KEY=your_api_key_here
 LLM_MODEL=gemini/gemini-2.5-flash
 IMAGE_MODEL=gemini/gemini-2.5-flash-image
 ```
 
+3. **Run a Game:**
+PipeDream works by wrapping any console command.
+### Example: Colossal Cave Adventure (Python Port)
 
-3. **Run the engine:**
+
+First, install the game so it is available globally (outside the project environment). Using `uv` is recommended:
 ```bash
-python src/pipedream/engine.py
-
+uv tool install adventure
 ```
 
 
-This will launch the mock game in the terminal and open the "PipeDream Visualizer" window. Type commands (e.g., `look`, `west`) to trigger generation.
+*(Windows User Note: If you encounter readline errors, install with the Windows patch: `uv tool install adventure --with pyreadline3 --force`)*
+
+**Launch with PipeDream:**
+```bash
+pipedream adventure
+```
+
+
+### Example: Generic Use
+
+
+You can wrap other interpreters (like Frotz) similarly:
+```bash
+# Syntax: pipedream <command_to_run_game>
+pipedream frotz games/zork1.z5
+```
