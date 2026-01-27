@@ -2,6 +2,7 @@ import base64
 import os
 import json
 import hashlib
+import shutil
 import requests
 from litellm import completion, image_generation
 from dotenv import load_dotenv
@@ -9,14 +10,14 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 class SmartCache:
-    def __init__(self, cache_dir="cache"):
+    def __init__(self, style_prompt=None, cache_dir="cache"):
         self.cache_dir = cache_dir
         self.images_dir = os.path.join(cache_dir, "images")
         self.map_file = os.path.join(cache_dir, "mapping.json")
         self.memory = {}
         self.model = os.getenv("IMAGE_MODEL", "gemini/gemini-2.5-flash-image")
         self.api_key = os.getenv("GEMINI_API_KEY")
-        
+        self.style = style_prompt or "Oil painting, dark fantasy, atmospheric"
         os.makedirs(self.images_dir, exist_ok=True)
         self._load_map()
 
@@ -30,7 +31,18 @@ class SmartCache:
             json.dump(self.memory, f, indent=2)
 
     def _get_hash(self, text):
-        return hashlib.md5(text.encode('utf-8')).hexdigest()
+        combined = f"{text}||{self.style}"
+        return hashlib.md5(combined.encode('utf-8')).hexdigest()
+    
+    def clear(self):
+        """Wipes the cache directory and memory."""
+        print("[*] Clearing Cache...")
+        if os.path.exists(self.images_dir):
+            shutil.rmtree(self.images_dir)
+        os.makedirs(self.images_dir, exist_ok=True)
+        self.memory = {}
+        self._save_map()
+        print("[*] Cache Cleared.")
 
     def lookup(self, raw_text):
         """

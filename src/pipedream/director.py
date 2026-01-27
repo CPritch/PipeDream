@@ -8,8 +8,9 @@ load_dotenv()
 warnings.filterwarnings("ignore", category=UserWarning, module="pydantic")
 
 class Director:
-    def __init__(self):
+    def __init__(self, style_prompt=None):
         self.model = os.getenv("LLM_MODEL", "gemini/gemini-2.5-flash")
+        self.style = style_prompt or "Oil painting, dark fantasy, atmospheric"
         
     def describe_scene(self, raw_text):
         """
@@ -21,7 +22,7 @@ class Director:
             "Your job is to read the game text and output a VISUAL PROMPT for an image generator. "
             "Rules:\n"
             "1. If the text describes a location, atmosphere, or event, output a concise (under 40 words) visual description. "
-            "Style: Oil painting, dark fantasy, atmospheric.\n"
+            f"Style: {self.style}.\n"
             "2. If the text is an error message (e.g., 'I don't know that word'), a menu, a save confirmation, or just a short dialogue with no visual changes, output exactly: NO_SCENE\n"
             "3. Do NOT chat. Do NOT ask for more input. Only output the description or NO_SCENE."
         )

@@ -8,13 +8,16 @@ if sys.platform == 'win32':
     from pexpect.popen_spawn import PopenSpawn
 
 class PipeDream:
-    def __init__(self, command):
+    def __init__(self, command, style=None, clear_cache=False):
         self.command = command
         self.process = None
         self.prompt_pattern = r'[>:]\s*$' 
 
-        self.director = Director()
-        self.cache = SmartCache()
+        self.director = Director(style_prompt=style)
+        self.cache = SmartCache(style_prompt=style)
+
+        if clear_cache:
+            self.cache.clear()
 
         self.custom_print = print
         self.custom_input = input
@@ -109,6 +112,9 @@ class PipeDream:
 
 def main():
     parser = argparse.ArgumentParser(description="PipeDream: AI Visualizer for Interactive Fiction")
+    
+    parser.add_argument('--art-style', dest='style', type=str, default=None, help="Visual style prompt")
+    parser.add_argument('--clear-cache', action='store_true', help="Wipe cache before starting")
     parser.add_argument('game_command', nargs=argparse.REMAINDER, help="The command to run the game")
     
     args = parser.parse_args()
@@ -117,7 +123,7 @@ def main():
         sys.exit(1)
 
     full_command = " ".join(args.game_command)
-    engine = PipeDream(full_command)
+    engine = PipeDream(full_command, style=args.style, clear_cache=args.clear_cache)
     engine.start()
 
 if __name__ == "__main__":
