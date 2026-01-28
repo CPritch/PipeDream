@@ -12,7 +12,7 @@ class Director:
         self.model = os.getenv("LLM_MODEL", "gemini/gemini-2.5-flash")
         self.style = style_prompt or "Oil painting, dark fantasy, atmospheric"
         
-    def describe_scene(self, raw_text):
+    def describe_scene(self, raw_text, previous_text=""):
         """
         Converts raw game output into a visual art prompt.
         Returns None if the text is not a visual scene.
@@ -21,18 +21,21 @@ class Director:
             "You are a background process for a text adventure game. "
             "Your job is to read the game text and output a VISUAL PROMPT for an image generator. "
             "Rules:\n"
-            "1. If the text describes a location, atmosphere, or event, output a concise (under 40 words) visual description. "
+            "1. COMPARE the current text with the previous text.\n"
+            "2. If the current text is an error (e.g. 'You can't go that way'), a system response ('OK'), or functionally identical to the previous text (re-printing the room description), output exactly: NO_SCENE\n"
+            "3. If the scene has CHANGED (new location, new item, different time of day), output a concise (under 40 words) visual description. "
             f"Style: {self.style}.\n"
-            "2. If the text is an error message (e.g., 'I don't know that word'), a menu, a save confirmation, or just a short dialogue with no visual changes, output exactly: NO_SCENE\n"
-            "3. Do NOT chat. Do NOT ask for more input. Only output the description or NO_SCENE."
+            "4. Do NOT chat. Only output the description or NO_SCENE."
         )
+
+        user_content = f"PREVIOUS TEXT: {previous_text}\n\nCURRENT TEXT: {raw_text}"
 
         try:
             response = completion(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"GAME TEXT: {raw_text}"}
+                    {"role": "user", "content": user_content}                
                 ]
             )
             clean_prompt = response.choices[0].message.content.strip()

@@ -64,6 +64,12 @@ class SmartCache:
         Generates the image, saves it using the RAW TEXT hash, and returns path.
         """
         text_hash = self._get_hash(raw_text)
+        
+        if text_hash in self.memory:
+            if os.path.exists(self.memory[text_hash]):
+                print(f"[*] SmartCache Hit: {self.memory[text_hash]}")
+                return self.memory[text_hash]
+
         filename = f"{text_hash}.png"
         filepath = os.path.join(self.images_dir, filename)
 

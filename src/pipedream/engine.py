@@ -3,6 +3,7 @@ import argparse
 import pexpect
 from pipedream.director import Director
 from pipedream.cache import SmartCache
+from pipedream.navigator import Navigator
 
 if sys.platform == 'win32':
     from pexpect.popen_spawn import PopenSpawn
@@ -12,12 +13,16 @@ class PipeDream:
         self.command = command
         self.process = None
         self.prompt_pattern = r'[>:]\s*$' 
+        self.last_input = None
+        self.previous_text = ""
 
         self.director = Director(style_prompt=style)
         self.cache = SmartCache(style_prompt=style)
+        self.navigator = Navigator()
 
         if clear_cache:
             self.cache.clear()
+            self.navigator.reset()
 
         self.custom_print = print
         self.custom_input = input
@@ -39,7 +44,10 @@ class PipeDream:
             
             while True:
                 user_input = self.custom_input("USER > ") 
-                
+
+                self.last_input = user_input.strip()
+                self.navigator.set_last_command(user_input)
+
                 self.process.sendline(user_input)
                 
                 if user_input.strip().lower() in ['quit', 'exit', 'q']:
@@ -80,35 +88,40 @@ class PipeDream:
 
     def clean_output(self, text):
         lines = text.splitlines()
-        # Clean up echo if present
-        if lines and self.process.before and lines[0] in self.process.before: 
-            return "\n".join(lines[1:])
+        if not text:
+            return ""
+            
+        lines = text.splitlines()
+        
+        if self.last_input and lines and self.last_input in lines[0]:
+            return "\n".join(lines[1:]).strip()
+            
         return text
 
     def trigger_pipeline(self, text):
-        if len(text.strip()) < 25: 
+        if len(text.strip()) < 5:
             return
 
         print(f"\n[PIPEDREAM] Analyzing Scene...")
         
-        cached_path = self.cache.lookup(text)
-        if cached_path:
-            print(f"   > Cache Hit! Skipping LLM.")
-            self.custom_image(cached_path)
-            return
+        visual_prompt = self.director.describe_scene(text, self.previous_text)
         
-        visual_prompt = self.director.describe_scene(text)
-        if not visual_prompt:
-            print("   > No visual changes detected.")
-            return
-        
-        print(f"   > Prompt: {visual_prompt}")
+        if visual_prompt:
+             print(f"   > Prompt: {visual_prompt}")
+        else:
+             print("   > No visual changes detected (or NO_SCENE).")
 
-        image_path = self.cache.generate(text, visual_prompt)
+        image_path = self.navigator.process_move(
+            visual_prompt, 
+            self.cache.generate, 
+            text
+        )
 
         if image_path:
             print(f"   > Image ready.")
             self.custom_image(image_path)
+
+        self.previous_text = text
 
 def main():
     parser = argparse.ArgumentParser(description="PipeDream: AI Visualizer for Interactive Fiction")
