@@ -23,8 +23,34 @@ The project now features a functional GUI that separates the game terminal from 
 
 * **Engine:** Captures game output via `pexpect` (Unix) or `Popen` (Windows).
 * **Director:** Uses an LLM to interpret game text into visual prompts.
+* **Navigator:** A graph-based state machine that maps the game world as you explore, early attempt at backtracking and spatial consistency.
 * **Generator:** Calls external image generation APIs (via `litellm`) and saves results to a local cache.
 * **Interface:** A PySide6 (Qt/QML) application providing a split-view experience: game terminal on the right, AI visualization on the left.
+
+
+## Features & Usage
+
+### Visual Styles
+You can customize the art style of the generation using the `--art-style` flag. The default is "Oil painting, dark fantasy, atmospheric".
+
+```bash
+# Example: Pixel Art Style
+pipedream-gui --art-style "Retro 8-bit pixel art, green monochrome" adventure
+
+# Example: Pencil Sketch
+pipedream-gui --art-style "Rough pencil sketch on parchment" adventure
+
+```
+
+### Cache Management
+
+PipeDream caches images aggressively to save API costs and speed up backtracking. If you want to regenerate the world from scratch (e.g., after changing styles), use the clear cache flag.
+
+```bash
+# Wipes the cache and resets the world map
+pipedream-gui --clear-cache adventure
+
+```
 
 ## Quick Start (Dev)
 
