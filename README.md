@@ -75,7 +75,7 @@ pipedream-gui frotz games/zork1.z5
 
 ---
 
-## ✨ Features
+## Features
 
 * **Universal Compatibility:** Works with Python scripts, binaries, and interpreters (Frotz, Glulxe).
 * **State-Aware Navigator:** A graph-based system tracks movement. If you leave a room and come back, PipeDream restores the previous image.
@@ -106,7 +106,7 @@ pipedream-gui --clear-cache adventure
 
 ---
 
-## 🛠️ Development
+## Development
 
 If you want to play around with the source code:
 
