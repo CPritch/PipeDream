@@ -1,6 +1,6 @@
 import os
 import warnings
-from litellm import completion
+from litellm import completion, completion_cost
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -8,10 +8,11 @@ load_dotenv()
 warnings.filterwarnings("ignore", category=UserWarning, module="pydantic")
 
 class Director:
-    def __init__(self, style_prompt=None):
+    def __init__(self, engine, style_prompt=None):
+        self.engine = engine
         self.model = os.getenv("LLM_MODEL", "gemini/gemini-2.5-flash")
         self.style = style_prompt or "Oil painting, dark fantasy, atmospheric"
-        
+
     def describe_scene(self, raw_text, previous_text=""):
         """
         Converts raw game output into a visual art prompt.
@@ -38,6 +39,15 @@ class Director:
                     {"role": "user", "content": user_content}                
                 ]
             )
+            try:
+                cost = completion_cost(completion_response=response)
+                # Only log if > 0 to reduce spam
+                if cost > 0:
+                    print(f"[$$$] Director Cost: ${cost:.6f}")
+                    self.engine.report_cost(cost)
+            except:
+                pass
+            
             clean_prompt = response.choices[0].message.content.strip()
             
             if "NO_SCENE" in clean_prompt or len(clean_prompt) < 5:

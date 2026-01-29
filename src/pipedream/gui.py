@@ -1,5 +1,5 @@
-import os
 import sys
+import os
 import queue
 import argparse
 from pathlib import Path
@@ -11,9 +11,10 @@ from PySide6.QtQml import QQmlApplicationEngine
 from pipedream.engine import PipeDream
 
 class GameWorker(QThread):
-    """Runs the pipedream engine in a background thread."""
     text_received = Signal(str)
     image_received = Signal(str)
+    cost_updated = Signal(float)
+    status_updated = Signal(str)
 
     def __init__(self, command, style=None, clear_cache=False):
         super().__init__()
@@ -30,18 +31,28 @@ class GameWorker(QThread):
             clear_cache=self.clear_cache
         )
         
-        self.engine.custom_print = self.handle_text
+        # HOOKS
+        self.engine.custom_print = self.handle_game_text
         self.engine.custom_input = self.handle_input
         self.engine.custom_image = self.handle_image
+        self.engine.cost_callback = self.handle_cost
+        self.engine.status_callback = self.handle_status
         
         self.engine.start()
 
-    def handle_text(self, text):
+    def handle_game_text(self, text):
         self.text_received.emit(text)
 
     def handle_image(self, path):
         full_path = Path(path).absolute().as_uri()
         self.image_received.emit(full_path)
+        self.status_updated.emit("Ready") # Reset status when image arrives
+
+    def handle_cost(self, amount):
+        self.cost_updated.emit(amount)
+
+    def handle_status(self, msg):
+        self.status_updated.emit(msg)
 
     def handle_input(self, prompt=""):
         return self.input_queue.get()
@@ -50,51 +61,46 @@ class GameWorker(QThread):
         self.input_queue.put(cmd)
 
 class Backend(QObject):
-    """The bridge between QML and Python."""
-    
     textChanged = Signal()
     imageChanged = Signal()
+    costChanged = Signal()   # New
+    statusChanged = Signal() # New
 
     def __init__(self, command, style=None, clear_cache=False):
         super().__init__()
-        self._text = "PipeDream v0.2.0 initialized...\n"
+        self._text = ""
         self._image = ""
-
+        self._cost = 0.0000
+        self._status = "Initializing..."
+        
         self._check_api_key()
         
         self.worker = GameWorker(command, style, clear_cache)
         self.worker.text_received.connect(self.append_text)
         self.worker.image_received.connect(self.update_image)
+        self.worker.cost_updated.connect(self.add_cost)
+        self.worker.status_updated.connect(self.update_status)
         self.worker.start()
 
     def _check_api_key(self):
-        """Checks for API key and prints a helpful banner if missing."""
         key = os.getenv("GEMINI_API_KEY")
         if not key:
-            warning = (
-                "\n"
-                "╔════════════════════════════════════════════════════════════╗\n"
-                "║  ⚠️  MISSING API KEY                                      ║\n"
-                "║                                                            ║\n"
-                "║  To see AI visuals, you need an API Key. (Gemini tested)   ║\n"
-                "║  1. Get one free: https://aistudio.google.com/app/apikey   ║\n"
-                "║  2. Set it in your terminal:                               ║\n"
-                "║     export GEMINI_API_KEY='AIzaSy...'                      ║\n"
-                "║                                                            ║\n"
-                "║  (The game will run in text-only mode for now)             ║\n"
-                "║  For other API's or models please check Github's README    ║\n"
-                "╚════════════════════════════════════════════════════════════╝\n\n"
-            )
-            self._text += warning
+            self._text += "\n⚠️ MISSING API KEY. VISUALS DISABLED.\n"
 
+    # --- PROPERTIES ---
     @Property(str, notify=textChanged)
-    def console_text(self):
-        return self._text
+    def console_text(self): return self._text
 
     @Property(str, notify=imageChanged)
-    def current_image(self):
-        return self._image
+    def current_image(self): return self._image
 
+    @Property(str, notify=costChanged)
+    def session_cost(self): return f"{self._cost:.4f}"
+
+    @Property(str, notify=statusChanged)
+    def status_message(self): return self._status
+
+    # --- SLOTS ---
     @Slot(str)
     def send_command(self, cmd):
         self.append_text(f"> {cmd}\n")
@@ -107,6 +113,14 @@ class Backend(QObject):
     def update_image(self, path):
         self._image = path
         self.imageChanged.emit()
+
+    def add_cost(self, amount):
+        self._cost += amount
+        self.costChanged.emit()
+
+    def update_status(self, msg):
+        self._status = msg
+        self.statusChanged.emit()
 
 def main():
     parser = argparse.ArgumentParser(description="PipeDream GUI")

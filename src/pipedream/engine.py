@@ -16,8 +16,8 @@ class PipeDream:
         self.last_input = None
         self.previous_text = ""
 
-        self.director = Director(style_prompt=style)
-        self.cache = SmartCache(style_prompt=style)
+        self.director = Director(self, style_prompt=style)
+        self.cache = SmartCache(self, style_prompt=style)
         self.navigator = Navigator()
 
         if clear_cache:
@@ -28,8 +28,23 @@ class PipeDream:
         self.custom_input = input
         self.custom_image = self.default_image_handler
 
+    def safe_print(self, text):
+        """Wrapper to ensure we call the latest custom_print"""
+        if self.custom_print:
+            self.custom_print(str(text))
+
     def default_image_handler(self, path):
         print(f"[*] IMAGE GENERATED: {path}")
+
+    def report_cost(self, amount):
+        """Helper to safely trigger cost callback"""
+        if self.cost_callback:
+            self.cost_callback(amount)
+
+    def report_status(self, msg):
+        """Helper to safely trigger status callback"""
+        if self.status_callback:
+            self.status_callback(msg)
 
     def start(self):
         self.custom_print(f"[*] Launching: {self.command}")
@@ -103,13 +118,15 @@ class PipeDream:
             return
 
         print(f"\n[PIPEDREAM] Analyzing Scene...")
+        self.report_status("Analyzing...")
         
         visual_prompt = self.director.describe_scene(text, self.previous_text)
         
         if visual_prompt:
              print(f"   > Prompt: {visual_prompt}")
         else:
-             print("   > No visual changes detected (or NO_SCENE).")
+             print("   > No visual changes.")
+             self.report_status("Ready")
 
         image_path = self.navigator.process_move(
             visual_prompt, 
