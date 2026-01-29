@@ -4,99 +4,142 @@ PipeDream is a utility that adds a visual dimension to text-based interactive fi
 
 ![Alt text](/screenshots/screenshot-1.png?raw=true "Example run of adventure game.")
 
-## Core Goals
+## Quick Start (30 Seconds)
 
-1. **Universal Compatibility**
-   If a game runs in a terminal and outputs text to stdout, PipeDream should be able to visualize it. This includes Z-Machine interpreters (Frotz), Python text adventures, or custom binaries.
+Experience the visualization immediately with the built-in demo cartridge.
 
-2. **Real-Time Responsiveness**
-   The visualization process must be fast enough to keep pace with the gameplay loop. The architecture prioritizes low latency to maintain immersion.
+**1. Install**
+```bash
+pip install pipedream-fiction
 
-3. **Visual Consistency**
-   The tool aims to maintain narrative coherence. If a player drops an item or revisits a room, the generated imagery should reflect the previous state rather than hallucinating a completely new environment.
+```
 
-## Current Status
+**2. Get an API Key**
+You need a Gemini API key for the image generation (Free tier available).
 
-**Status: Functional Prototype (GUI)**
+* Get one here: [Google AI Studio](https://aistudio.google.com/app/apikey)
+* Set it in your terminal:
+```bash
+# Linux / macOS
+export GEMINI_API_KEY="AIzaSy..."
 
-The project now features a functional GUI that separates the game terminal from the visual output.
+# Windows (PowerShell)
+$env:GEMINI_API_KEY="AIzaSy..."
 
-* **Engine:** Captures game output via `pexpect` (Unix) or `Popen` (Windows).
-* **Director:** Uses an LLM to interpret game text into visual prompts.
-* **Navigator:** A graph-based state machine that maps the game world as you explore, early attempt at backtracking and spatial consistency.
-* **Generator:** Calls external image generation APIs (via `litellm`) and saves results to a local cache.
-* **Interface:** A PySide6 (Qt/QML) application providing a split-view experience: game terminal on the right, AI visualization on the left.
+```
 
 
-## Features & Usage
 
-### Visual Styles
-You can customize the art style of the generation using the `--art-style` flag. The default is "Oil painting, dark fantasy, atmospheric".
+**3. Run the Demo**
+Launch the GUI without arguments to play the internal mock game.
 
 ```bash
-# Example: Pixel Art Style
+pipedream-gui
+
+```
+
+---
+
+## Running Real Games
+
+PipeDream wraps **any** console command. If you can run a game in your terminal, PipeDream can visualize it.
+
+### Example: Colossal Cave Adventure
+
+The perfect test bed for PipeDream.
+
+1. **Install the game globally:**
+```bash
+uv tool install adventure
+# Windows users: uv tool install adventure --with pyreadline3 --force
+
+```
+
+
+2. **Launch with PipeDream:**
+```bash
+pipedream-gui adventure
+
+```
+
+
+
+### Example: Interactive Fiction (Frotz)
+
+Play classic Z-Machine games like *Zork*.
+
+```bash
+pipedream-gui frotz games/zork1.z5
+
+```
+
+---
+
+## ✨ Features
+
+* **Universal Compatibility:** Works with Python scripts, binaries, and interpreters (Frotz, Glulxe).
+* **State-Aware Navigator:** A graph-based system tracks movement. If you leave a room and come back, PipeDream restores the previous image.
+* **Cost Tracking:** The GUI displays your session cost in real-time (via `litellm`), so you can monitor your API usage.
+* **Visual Consistency:** The "Director" AI compares new text against previous context to prevent unnecessary regenerations when you mistype a command. (Attempts to at least!)
+
+### Customizing Styles
+
+You can override the default art style ("Oil painting, dark fantasy") with the `--art-style` flag.
+
+```bash
+# Pixel Art Style
 pipedream-gui --art-style "Retro 8-bit pixel art, green monochrome" adventure
 
-# Example: Pencil Sketch
+# Pencil Sketch
 pipedream-gui --art-style "Rough pencil sketch on parchment" adventure
 
 ```
 
 ### Cache Management
 
-PipeDream caches images aggressively to save API costs and speed up backtracking. If you want to regenerate the world from scratch (e.g., after changing styles), use the clear cache flag.
+PipeDream caches aggressively to save money. If you change styles, you can wipe the world map:
 
 ```bash
-# Wipes the cache and resets the world map
 pipedream-gui --clear-cache adventure
 
 ```
 
-## Quick Start (Dev)
+---
 
-### 1. Install Dependencies
-Install the package in editable mode to register the `pipedream-gui` command.
+## 🛠️ Development
+
+If you want to play around with the source code:
+
+1. **Clone the repo:**
 ```bash
-   pip install -e .
+git clone [https://github.com/yourusername/pipedream.git](https://github.com/yourusername/pipedream.git)
+cd pipedream
+
 ```
 
-2. **Configure Environment:**
-Create a `.env` file in the root directory. You need keys for both the LLM (Director) and the Image Generator.
+
+2. **Install in editable mode:**
+```bash
+pip install -e .
+
+```
+
+
+3. **Configure Environment:**
+Create a `.env` file in the root:
 ```ini
-GEMINI_API_KEY=your_api_key_here
+GEMINI_API_KEY=AIzaSy...
 LLM_MODEL=gemini/gemini-2.5-flash
 IMAGE_MODEL=gemini/gemini-2.5-flash-image
-```
 
-3. **Run a Game:**
-PipeDream works by wrapping any console command.
-### Example: Colossal Cave Adventure (Python Port)
-
-
-First, install the game so it is available globally (outside the project environment). Using `uv` is recommended:
-```bash
-uv tool install adventure
 ```
 
 
-*(Windows User Note: If you encounter readline errors, install with the Windows patch: `uv tool install adventure --with pyreadline3 --force`)*
 
-**Launch with PipeDream:**
-```bash
-pipedream-gui adventure
+## Troubleshooting
+
+* **Windows "Shim" Errors:** If a Python game crashes immediately on Windows, try wrapping the command to force path resolution:
+```powershell
+pipedream-gui cmd /c adventure
+
 ```
-
-
-### Example: Generic Use
-
-
-You can wrap other interpreters (like Frotz) similarly:
-```bash
-# Syntax: pipedream-gui <command_to_run_game>
-pipedream-gui frotz games/zork1.z5
-```
-
-
-### Troubleshooting
-
-Windows "Shim" Errors: If you get errors running a Python game on Windows, try wrapping the command in cmd /c to force proper path resolution: `pipedream-gui cmd /c adventure`
