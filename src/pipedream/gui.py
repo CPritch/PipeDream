@@ -1,3 +1,4 @@
+import os
 import sys
 import queue
 import argparse
@@ -14,7 +15,6 @@ class GameWorker(QThread):
     text_received = Signal(str)
     image_received = Signal(str)
 
-    # Updated to accept style and cache settings
     def __init__(self, command, style=None, clear_cache=False):
         super().__init__()
         self.command = command
@@ -24,7 +24,6 @@ class GameWorker(QThread):
         self.engine = None
 
     def run(self):
-        # Pass the style/cache args to the PipeDream engine
         self.engine = PipeDream(
             self.command, 
             style=self.style, 
@@ -60,11 +59,33 @@ class Backend(QObject):
         super().__init__()
         self._text = "PipeDream v0.2.0 initialized...\n"
         self._image = ""
+
+        self._check_api_key()
         
         self.worker = GameWorker(command, style, clear_cache)
         self.worker.text_received.connect(self.append_text)
         self.worker.image_received.connect(self.update_image)
         self.worker.start()
+
+    def _check_api_key(self):
+        """Checks for API key and prints a helpful banner if missing."""
+        key = os.getenv("GEMINI_API_KEY")
+        if not key:
+            warning = (
+                "\n"
+                "╔════════════════════════════════════════════════════════════╗\n"
+                "║  ⚠️  MISSING API KEY                                      ║\n"
+                "║                                                            ║\n"
+                "║  To see AI visuals, you need an API Key. (Gemini tested)   ║\n"
+                "║  1. Get one free: https://aistudio.google.com/app/apikey   ║\n"
+                "║  2. Set it in your terminal:                               ║\n"
+                "║     export GEMINI_API_KEY='AIzaSy...'                      ║\n"
+                "║                                                            ║\n"
+                "║  (The game will run in text-only mode for now)             ║\n"
+                "║  For other API's or models please check Github's README    ║\n"
+                "╚════════════════════════════════════════════════════════════╝\n\n"
+            )
+            self._text += warning
 
     @Property(str, notify=textChanged)
     def console_text(self):
