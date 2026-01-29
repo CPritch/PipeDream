@@ -97,10 +97,10 @@ def main():
     args = parser.parse_args()
 
     if not args.game_command:
-        print("Usage: pipedream-gui [--visual-style '...'] <game_command>")
-        sys.exit(1)
-
-    game_cmd = " ".join(args.game_command)
+        print("[*] No game specified. Launching internal demo...")
+        game_cmd = f"{sys.executable} -m pipedream.games.mock_game" 
+    else:
+        game_cmd = " ".join(args.game_command)
 
     app = QGuiApplication(sys.argv)
     engine = QQmlApplicationEngine()
