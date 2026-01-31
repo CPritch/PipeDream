@@ -102,16 +102,20 @@ class PipeDream:
             pass
 
     def clean_output(self, text):
-        lines = text.splitlines()
         if not text:
             return ""
             
+        # Strip ANSI Escape Sequences
+        ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+        text = ansi_escape.sub('', text)
+
         lines = text.splitlines()
         
+        # Remove the echoed command (if present)
         if self.last_input and lines and self.last_input in lines[0]:
             return "\n".join(lines[1:]).strip()
             
-        return text
+        return text.strip()
 
     def trigger_pipeline(self, text):
         if len(text.strip()) < 5:
