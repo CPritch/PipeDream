@@ -42,16 +42,14 @@ class Navigator:
         """Call this right before sending input to the game process."""
         self.last_command = cmd.strip().lower()
 
-    def process_move(self, visual_prompt, generator_func, raw_text):
+    def process_move(self, visual_prompt, generator_func, raw_text, pre_cached_image=None):
         """
         Decides whether to move, generate, or stay put.
         Returns: The image path to display.
         """
         
-        # VALIDATION: If no visual change, we didn't move.
-        if not visual_prompt:
-            # We assume we are still at the current node.
-            # Return current image (if any)
+        # VALIDATION: If no visual change AND no cached image, we didn't move.
+        if not visual_prompt and not pre_cached_image:
             return self.nodes[self.current_node_id].get("image_path")
 
         current_node = self.nodes[self.current_node_id]
@@ -64,10 +62,13 @@ class Navigator:
             self.current_node_id = target_id
             return self.nodes[target_id].get("image_path")
 
-        # EXPLORATION: This is a new place.
-        print(f"[Navigator] New territory! Creating node.")
-        
-        image_path = generator_func(raw_text, visual_prompt)
+        # EXPLORATION: This is a new path.
+        if pre_cached_image:
+            print(f"[Navigator] Linking new path to known cache.")
+            image_path = pre_cached_image
+        else:
+            print(f"[Navigator] New territory! Creating node.")
+            image_path = generator_func(raw_text, visual_prompt)
         
         if not image_path:
             return None

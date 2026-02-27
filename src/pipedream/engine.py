@@ -129,13 +129,28 @@ class PipeDream:
         print(f"\n[PIPEDREAM] Analyzing Scene...")
         self.report_status("Analyzing...")
         
-        visual_prompt = self.director.describe_scene(text, self.previous_text)
+        cached_img = self.cache.lookup(text)
+        visual_prompt = None
         
-        if visual_prompt:
-             print(f"   > Prompt: {visual_prompt}")
+        if cached_img:
+            print("   > Scene recognized from cache. Bypassing Director.")
         else:
-             print("   > No visual changes.")
-             self.report_status("Ready")
+            # Only hit the LLM if we don't know what this room looks like
+            visual_prompt = self.director.describe_scene(text, self.previous_text)
+            
+            if visual_prompt:
+                 print(f"   > Prompt: {visual_prompt}")
+            else:
+                 print("   > No visual changes.")
+                 self.report_status("Ready")
+
+        # Pass both the potential prompt and the potential cached image
+        image_path = self.navigator.process_move(
+            visual_prompt, 
+            self.cache.generate, 
+            text,
+            pre_cached_image=cached_img
+        )
 
         image_path = self.navigator.process_move(
             visual_prompt, 
