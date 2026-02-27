@@ -10,7 +10,7 @@ if sys.platform == 'win32':
     from pexpect.popen_spawn import PopenSpawn
 
 class PipeDream:
-    def __init__(self, command, style=None, clear_cache=False):
+    def __init__(self, command, style=None, clear_cache=False, img2img=False):
         self.command = command
         self.process = None
         self.prompt_pattern = r'[>:]\s*$' 
@@ -20,9 +20,10 @@ class PipeDream:
         safe_cmd = re.sub(r'[^a-zA-Z0-9]', '_', command.strip().lower())
         safe_style = re.sub(r'[^a-zA-Z0-9]', '_', str(style).strip().lower())[:20] 
         self.session_id = f"{safe_cmd}_{safe_style}"
+        self.img2img = img2img
 
-        self.director = Director(self, style_prompt=style)
-        self.cache = SmartCache(self, session_id=self.session_id, style_prompt=style)
+        self.director = Director(self, style_prompt=style, img2img=self.img2img)
+        self.cache = SmartCache(self, session_id=self.session_id, style_prompt=style, img2img=self.img2img)
         self.navigator = Navigator(session_id=self.session_id)
 
         if clear_cache:
@@ -169,6 +170,7 @@ def main():
     
     parser.add_argument('--art-style', dest='style', type=str, default=None, help="Visual style prompt")
     parser.add_argument('--clear-cache', action='store_true', help="Wipe cache before starting")
+    parser.add_argument('--img2img', action='store_true', help="Enable image-to-image generation")
     parser.add_argument('game_command', nargs=argparse.REMAINDER, help="The command to run the game")
     
     args = parser.parse_args()
@@ -177,7 +179,7 @@ def main():
         sys.exit(1)
 
     full_command = " ".join(args.game_command)
-    engine = PipeDream(full_command, style=args.style, clear_cache=args.clear_cache)
+    engine = PipeDream(full_command, style=args.style, clear_cache=args.clear_cache, img2img=args.img2img)
     engine.start()
 
 if __name__ == "__main__":

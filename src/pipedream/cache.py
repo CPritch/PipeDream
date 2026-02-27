@@ -11,9 +11,10 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 class SmartCache:
-    def __init__(self, engine, session_id="default", style_prompt=None, cache_dir="cache"):
+    def __init__(self, engine, session_id="default", style_prompt=None, cache_dir="cache", img2img=False):
         self.engine = engine
         self.cache_dir = cache_dir
+        self.img2img = img2img
         self.images_dir = os.path.join(cache_dir, f"images_{session_id}")
         self.map_file = os.path.join(cache_dir, f"mapping_{session_id}.json")
         self.memory = {}
@@ -62,7 +63,7 @@ class SmartCache:
         
         return None
 
-    def generate(self, raw_text, visual_prompt):
+    def generate(self, raw_text, visual_prompt, reference_image=None):
         """
         Generates the image, saves it using the RAW TEXT hash, and returns path.
         """
@@ -89,9 +90,21 @@ class SmartCache:
                 if not call_model.startswith("gemini/"):
                      call_model = f"gemini/{call_model}"
 
+                message_content = [{"type": "text", "text": visual_prompt}]
+
+                if self.img2img and reference_image and os.path.exists(reference_image):
+                    print("   > Injecting reference image for img2img transition...")
+                    with open(reference_image, "rb") as img_file:
+                        b64_image = base64.b64encode(img_file.read()).decode('utf-8')
+                        
+                    message_content.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{b64_image}"}
+                    })
+
                 response = completion(
                     model=call_model,
-                    messages=[{"role": "user", "content": visual_prompt}],
+                    messages=[{"role": "user", "content": message_content}],
                     modalities=["image", "text"],
                     api_key=self.api_key
                 )

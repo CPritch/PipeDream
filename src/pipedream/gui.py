@@ -17,11 +17,12 @@ class GameWorker(QThread):
     cost_updated = Signal(float)
     status_updated = Signal(str)
 
-    def __init__(self, command, style=None, clear_cache=False):
+    def __init__(self, command, style=None, clear_cache=False, img2img=False):
         super().__init__()
         self.command = command
         self.style = style
         self.clear_cache = clear_cache
+        self.img2img = img2img
         self.input_queue = queue.Queue()
         self.engine = None
 
@@ -29,7 +30,8 @@ class GameWorker(QThread):
         self.engine = PipeDream(
             self.command, 
             style=self.style, 
-            clear_cache=self.clear_cache
+            clear_cache=self.clear_cache,
+            img2img=self.img2img
         )
         
         # HOOKS
@@ -67,7 +69,7 @@ class Backend(QObject):
     costChanged = Signal()   # New
     statusChanged = Signal() # New
 
-    def __init__(self, command, style=None, clear_cache=False):
+    def __init__(self, command, style=None, clear_cache=False, img2img=False):
         super().__init__()
         self._text = ""
         self._image = ""
@@ -76,7 +78,7 @@ class Backend(QObject):
         
         self._check_api_key()
         
-        self.worker = GameWorker(command, style, clear_cache)
+        self.worker = GameWorker(command, style, clear_cache, img2img)
         self.worker.text_received.connect(self.append_text)
         self.worker.image_received.connect(self.update_image)
         self.worker.cost_updated.connect(self.add_cost)
@@ -136,8 +138,9 @@ def main():
     
     parser.add_argument('--art-style', dest='style', type=str, default=None, help="Visual style prompt")
     parser.add_argument('--clear-cache', action='store_true', help="Clear image cache")
+    parser.add_argument('--img2img', action='store_true', help="Enable image-to-image generation for visual consistency")
     parser.add_argument('game_command', nargs=argparse.REMAINDER, help="Command to run")
-
+    
     args = parser.parse_args()
 
     if not args.game_command:
@@ -149,7 +152,7 @@ def main():
     app = QGuiApplication(sys.argv)
     engine = QQmlApplicationEngine()
 
-    backend = Backend(game_cmd, style=args.style, clear_cache=args.clear_cache)
+    backend = Backend(game_cmd, style=args.style, clear_cache=args.clear_cache, img2img=args.img2img)
     engine.rootContext().setContextProperty("backend", backend)
 
     qml_file = Path(__file__).parent / "ui/main.qml"

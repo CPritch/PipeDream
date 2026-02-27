@@ -68,7 +68,11 @@ class Navigator:
             image_path = pre_cached_image
         else:
             print(f"[Navigator] New territory! Creating node.")
-            image_path = generator_func(raw_text, visual_prompt)
+            current_image = None
+            if self.current_node_id and self.current_node_id in self.nodes:
+                current_image = self.nodes[self.current_node_id].get("image_path")
+                
+            image_path = generator_func(raw_text, visual_prompt, reference_image=current_image)
         
         if not image_path:
             return None
