@@ -3,8 +3,8 @@ import json
 import os
 
 class Navigator:
-    def __init__(self, cache_dir="cache"):
-        self.graph_file = os.path.join(cache_dir, "world_graph.json")
+    def __init__(self, session_id="default", cache_dir="cache"):
+        self.graph_file = os.path.join(cache_dir, f"world_graph_{session_id}.json")
         self.nodes = {}  # { uuid: { image_path: str, edges: { cmd: uuid } } }
         self.current_node_id = None
         self.last_command = None
@@ -98,7 +98,7 @@ class Navigator:
                 with open(self.graph_file, 'r') as f:
                     data = json.load(f)
                     self.nodes = data.get("nodes", {})
-                    self.current_node_id = data.get("current_node_id")
+                    self.current_node_id = None
             except Exception as e:
                 print(f"[!] Error loading graph: {e}")
 

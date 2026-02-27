@@ -11,11 +11,11 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 class SmartCache:
-    def __init__(self, engine, style_prompt=None, cache_dir="cache"):
+    def __init__(self, engine, session_id="default", style_prompt=None, cache_dir="cache"):
         self.engine = engine
         self.cache_dir = cache_dir
-        self.images_dir = os.path.join(cache_dir, "images")
-        self.map_file = os.path.join(cache_dir, "mapping.json")
+        self.images_dir = os.path.join(cache_dir, f"images_{session_id}")
+        self.map_file = os.path.join(cache_dir, f"mapping_{session_id}.json")
         self.memory = {}
         self.model = os.getenv("IMAGE_MODEL", "gemini/gemini-2.5-flash-image")
         self.api_key = os.getenv("GEMINI_API_KEY")

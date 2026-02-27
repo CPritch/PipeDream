@@ -17,9 +17,13 @@ class PipeDream:
         self.last_input = None
         self.previous_text = ""
 
+        safe_cmd = re.sub(r'[^a-zA-Z0-9]', '_', command.strip().lower())
+        safe_style = re.sub(r'[^a-zA-Z0-9]', '_', str(style).strip().lower())[:20] 
+        self.session_id = f"{safe_cmd}_{safe_style}"
+
         self.director = Director(self, style_prompt=style)
-        self.cache = SmartCache(self, style_prompt=style)
-        self.navigator = Navigator()
+        self.cache = SmartCache(self, session_id=self.session_id, style_prompt=style)
+        self.navigator = Navigator(session_id=self.session_id)
 
         if clear_cache:
             self.cache.clear()
