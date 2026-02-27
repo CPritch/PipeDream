@@ -19,14 +19,19 @@ class Director:
         Returns None if the text is not a visual scene.
         """
         system_prompt = (
-            "You are a background process for a text adventure game. "
-            "Your job is to read the game text and output a VISUAL PROMPT for an image generator. "
-            "Rules:\n"
-            "1. COMPARE the current text with the previous text.\n"
-            "2. If the current text is an error (e.g. 'You can't go that way'), a system response ('OK'), or functionally identical to the previous text (re-printing the room description), output exactly: NO_SCENE\n"
-            "3. If the scene has CHANGED (new location, new item, different time of day), output a concise (under 40 words) visual description. "
+            "You are a visual director for a text adventure game. "
+            "Analyze the CURRENT TEXT compared to the PREVIOUS TEXT and determine the visual outcome.\n\n"
+            "CATEGORIES:\n"
+            "- META/TITLE: Game titles, copyright text, prompts like 'Would you like instructions?', or out-of-character text.\n"
+            "- ACTION_FAILED: The player tried to move or act, but was blocked (e.g., 'A branch blocks your path', 'The door is locked').\n"
+            "- NO_CHANGE: System messages, inventory checks, or functionally identical room descriptions.\n"
+            "- SCENE_CHANGED: The player successfully entered a new area or the room's visual state changed.\n\n"
+            "RULES:\n"
+            "1. If the category is META/TITLE, ACTION_FAILED, or NO_CHANGE, output exactly: NO_SCENE\n"
+            "2. If the category is SCENE_CHANGED, output a concise (under 40 words) visual description. "
+            "CRITICAL SPATIAL RULE: You MUST explicitly include all visible exits and paths mapped to their cardinal directions in the prompt (e.g., 'A dark tunnel leads East, a heavy wooden door sits on the North wall'). "
             f"Style: {self.style}.\n"
-            "4. Do NOT chat. Only output the description or NO_SCENE."
+            "3. Do NOT chat. Only output NO_SCENE or the prompt description."
         )
 
         user_content = f"PREVIOUS TEXT: {previous_text}\n\nCURRENT TEXT: {raw_text}"
