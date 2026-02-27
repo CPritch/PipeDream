@@ -40,12 +40,10 @@ ApplicationWindow {
                     }
                 }
                 
-                Text {
+                BusyIndicator {
                     anchors.centerIn: parent
-                    text: backend.status_message
-                    color: "#666"
-                    font.pixelSize: 20
-                    visible: text !== "" && sceneImage.status === Image.Ready
+                    running: backend.status_message !== "Ready" && backend.status_message !== "Error"
+                    visible: running
                 }
             }
 

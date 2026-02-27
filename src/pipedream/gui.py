@@ -2,6 +2,7 @@ import sys
 import os
 import queue
 import argparse
+import signal
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal, Slot, Property, QThread
@@ -122,7 +123,15 @@ class Backend(QObject):
         self._status = msg
         self.statusChanged.emit()
 
+    def shutdown(self):
+        if self.worker.engine:
+            self.worker.engine.cleanup()
+        self.worker.quit()
+        self.worker.wait()
+
 def main():
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+
     parser = argparse.ArgumentParser(description="PipeDream GUI")
     
     parser.add_argument('--art-style', dest='style', type=str, default=None, help="Visual style prompt")
@@ -148,6 +157,8 @@ def main():
 
     if not engine.rootObjects():
         sys.exit(-1)
+
+    app.aboutToQuit.connect(backend.shutdown)
 
     sys.exit(app.exec())
 
