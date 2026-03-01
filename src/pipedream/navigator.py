@@ -55,19 +55,45 @@ class Navigator:
         current_node = self.nodes[self.current_node_id]
         cmd = self.last_command
 
-        # TRAVERSAL: Do we already know where this command goes?
+        # If we recognize the room from the cache, find its exact node in the graph.
+        if pre_cached_image:
+            target_id = None
+            for node_id, node_data in self.nodes.items():
+                if node_data.get("image_path") == pre_cached_image:
+                    target_id = node_id
+                    break
+            
+            if target_id:
+                print(f"[Navigator] Visual match found! Teleporting to known node.")
+                
+                # Correct the graph: The command they just typed actually leads here.
+                self.nodes[self.current_node_id]["edges"][cmd] = target_id
+                
+                # Auto-backtrack (assuming standard doors, though mazes may break this)
+                if cmd in self.opposites:
+                    opp_cmd = self.opposites[cmd]
+                    self.nodes[target_id]["edges"][opp_cmd] = self.current_node_id
+                
+                self.current_node_id = target_id
+                self.save_graph()
+                return pre_cached_image
+
+        # STANDARD TRAVERSAL: Do we already know where this command goes?
         if cmd in current_node["edges"]:
             target_id = current_node["edges"][cmd]
             print(f"[Navigator] Known path! Moving to {target_id}")
             self.current_node_id = target_id
             return self.nodes[target_id].get("image_path")
 
-        # EXPLORATION: This is a new path.
+        # EXPLORATION: This is entirely new territory.
         if pre_cached_image:
+            # Fallback just in case the image exists but the node was somehow lost
             print(f"[Navigator] Linking new path to known cache.")
             image_path = pre_cached_image
         else:
             print(f"[Navigator] New territory! Creating node.")
+            
+            # Grab the current image to use as a reference for the new one (img2img)
             current_image = None
             if self.current_node_id and self.current_node_id in self.nodes:
                 current_image = self.nodes[self.current_node_id].get("image_path")
@@ -77,21 +103,19 @@ class Navigator:
         if not image_path:
             return None
 
+        # CREATE NEW NODE
         new_node_id = str(uuid.uuid4())
         self.nodes[new_node_id] = {
             "image_path": image_path,
             "edges": {}
         }
 
-        # Link Forward: Current -> New
         self.nodes[self.current_node_id]["edges"][cmd] = new_node_id
         
-        # Link Backward: New -> Current (Auto-backtrack)
         if cmd in self.opposites:
             opp_cmd = self.opposites[cmd]
             self.nodes[new_node_id]["edges"][opp_cmd] = self.current_node_id
 
-        # Update State
         self.current_node_id = new_node_id
         self.save_graph()
         
