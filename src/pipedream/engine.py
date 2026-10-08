@@ -6,11 +6,12 @@ import shlex
 import hashlib
 import argparse
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import pexpect
 from pipedream import __version__
 from pipedream.director import Director, Finding
-from pipedream.gametext import (command_object, find_title, from_title, has_no_visible_effect, is_dark, unwrap,
+from pipedream.gametext import (apply_landmarks, command_object, find_title, from_title, has_no_visible_effect, is_dark, unwrap,
                                 without_possessions)
 from pipedream.imagegen import REMOVAL_CHANGE, ImageGenerator, Painter
 from pipedream.runtime import LocalBackends, PROFILES, DEFAULT_PROFILE
@@ -55,6 +56,7 @@ class PipeDream:
         # Scenes are illustrated on a background thread so the game never waits for a picture
         self.scenes = queue.Queue()
         self.latest_scene = 0
+        self.finder = ThreadPoolExecutor(1, thread_name_prefix="finder")  # looks for things while the director thinks
         self.scene_thread = threading.Thread(target=self._scene_loop, daemon=True)
 
     def safe_print(self, text):
@@ -200,55 +202,82 @@ class PipeDream:
             if scene_id != self.latest_scene:
                 return  # the player has already moved on; paint it if they come back
             scene = without_possessions(from_title(text, title) if title else text)
-            prompt = self.director.describe_place(place.name, scene)
-            if not prompt:
+            described = self.director.describe_place(place.name, scene, set(world.landmarks))
+            if not described:
                 print("   > No visual changes.")
                 return self.report_status("Ready")
+            for landmark, look in described.landmarks.items():
+                print(f"   > Landmark: {landmark} is {look}")
+            world.landmarks.update(described.landmarks)
+            prompt = apply_landmarks(described.prompt, world.landmarks) if described.outdoors else described.prompt
             print(f"   > Prompt: {prompt}")
             self.report_status("Generating Image...")
             place.prompt, place.edits = prompt, []
             place.base = place.image = self.painter.paint(prompt)
+            place.visitors = {}
             world.save()
+        elif world.news and scene_id == self.latest_scene:
+            return self._visitors(scene_id, place, " ".join(world.news))
         self._show(scene_id, place.image)
+
+    def _visitors(self, scene_id, place, news):
+        """Back at a known place, the game mentions something new ("There is a bloody axe here"): show it."""
+        if news not in place.visitors or not os.path.exists(place.visitors[news]):
+            verdict = self.director.assess(place, news, "(comes back here)")
+            image = None
+            if verdict.kind in ("change", "add", "remove") and self.painter.edits:
+                self.report_status("Generating Image...")
+                image, _ = self._edit(place.image, verdict.kind, verdict.edit, verdict.target)
+            place.visitors[news] = image or place.image  # remembered either way, so the same news is instant
+            self.world.save()
+        self._show(scene_id, place.visitors[news])
 
     def _change(self, scene_id, place, text, command):
         """Something happened where the player is: update the place's picture if the scene visibly changed."""
         if place is None or not place.image or has_no_visible_effect(command, self.world.titled):
             print("   > No visual changes.")
             return self.report_status("Ready")
+        # The player's own words name the thing best; the director's guess can drift ("wooden door" for "trap door").
+        # Start looking for it now, so the picture is searched while the director decides what happened.
+        acted_on = command_object(command)
+        search = self.finder.submit(self.director.find, place.image, acted_on) if acted_on and self.painter.edits else None
         verdict = self.director.assess(place, text, command)
         if verdict.kind == "dark":
             print("   > Dark.")
             self.world.current = None
             return self._show(scene_id, self.painter.darkness())
-        if verdict.kind not in ("change", "remove") or not self.painter.edits:
+        if verdict.kind not in ("change", "add", "remove") or not self.painter.edits:
             print("   > No visual changes.")
             return self.report_status("Ready")
         self.report_status("Generating Image...")
-        # The player's own words name the thing best; the director's guess can drift ("wooden door" for "trap door")
-        target = command_object(command) or verdict.target
-        image, instruction = self._edit(place.image, verdict.kind, verdict.edit, target)
+        target = acted_on or verdict.target
+        image, instruction = self._edit(place.image, verdict.kind, verdict.edit, target, search.result() if search else None)
         if image is None:
             return self.report_status("Ready")
-        place.image = image
+        place.image, place.visitors = image, {}
         place.edits.append({"kind": verdict.kind, "edit": instruction, "target": target})
         self.world.save()
         self._show(scene_id, place.image)
 
-    def _edit(self, image, kind, instruction, target):
-        """Apply an edit, confined to where the target is in the picture when the director can find it.
+    def _edit(self, image, kind, instruction, target, found=None):
+        """Apply an edit, confined to where the target is in the picture.
 
-        Returns (new picture or None if there was nothing to remove or the edit changed nothing, instruction used).
+        Changes and removals need their target in the picture; only an addition ("a thief is here") may repaint
+        the whole picture. Returns (new picture, or None if nothing was done or it made no difference, instruction).
         """
-        found = self.director.find(image, target) if target else Finding([])
+        if kind == "add":
+            found = Finding([])
+        elif found is None:
+            found = self.director.find(image, target) if target else Finding([])
+        if kind != "add" and not found.boxes:
+            print(f"   > No {target or 'target'} in the picture to {'remove' if kind == 'remove' else 'change'}.")
+            return None, instruction
         if kind == "remove":
-            if not found.boxes:
-                print(f"   > No {target} in the picture to remove.")
-                return None, instruction
             # Naming what's left, not just what goes, stops the model painting the thing straight back in
-            instruction = f"Remove the {target}, leaving {found.behind or 'the background'} in its place."
+            instruction = f"Remove the {target}, leaving only bare {found.surface or 'surroundings'} where it was."
         print(f"   > Edit: {instruction}" + (f" (at the {target})" if found.boxes else ""))
-        edited = self.painter.edit(image, instruction, found.boxes, REMOVAL_CHANGE if kind == "remove" else None)
+        edited = self.painter.edit(image, instruction, found.boxes, REMOVAL_CHANGE if kind == "remove" else None,
+                                   attempts=2 if kind == "remove" else 1)
         if edited is None:
             print("   > The edit made no visible difference, so it was dropped.")
         return edited, instruction
@@ -262,7 +291,7 @@ class PipeDream:
         image = place.base = self.painter.paint(place.prompt, seed=-1)
         for edit in place.edits:
             image = self._edit(image, edit.get("kind", "change"), edit["edit"], edit["target"])[0] or image
-        place.image = image
+        place.image, place.visitors = image, {}
         self.world.save()
         self._show(self.latest_scene, image)
 

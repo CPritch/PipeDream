@@ -353,7 +353,8 @@ class LocalBackends:
             sight = ["--mmproj", paths["director_vision"]] if "director_vision" in paths else []
             self._spawn("llama-server", [
                 paths["llama"], "--port", str(port), "-m", paths.get("director", paths["llm"]), *sight,
-                "--device", llm_device, "-c", "8192", "-np", "1",
+                # Two slots, so the director can look for something in the picture while it reads the reply
+                "--device", llm_device, "-c", "8192", "-np", "2",
             ])
             self.llm_url = f"http://127.0.0.1:{port}"
 

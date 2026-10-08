@@ -65,7 +65,7 @@ class Painter:
         # Style first: the image model weights the start of the prompt most
         return self._save(self.generator.generate(f"{self.style}. {prompt}", seed=self.seed if seed is None else seed))
 
-    def edit(self, image, instruction, boxes=(), min_change=None):
+    def edit(self, image, instruction, boxes=(), min_change=None, attempts=1):
         """Edit a picture. With boxes (0-1000 coordinates, from the director), only those areas are repainted.
 
         Returns the new picture's path, or None if no attempt changed the picture by at least `min_change`.
@@ -75,9 +75,12 @@ class Painter:
         prompt = f"{self.style}. {instruction} Keep everything else exactly the same."
         width, height = self.generator.width, self.generator.height
         mask = mask_png(width, height, boxes) if boxes else None
-        # The edit model sometimes returns the picture practically unchanged; another seed usually takes
-        for seed in (self.seed, self.seed + 1 if self.seed >= 0 else -1):
+        # The edit model sometimes returns the picture practically unchanged; another seed often takes
+        for attempt in range(attempts):
+            seed = self.seed + attempt if self.seed >= 0 else -1
             png = self.generator.generate(prompt, [image], seed=seed, init_image=image if mask else None, mask=mask)
+            if mask:
+                png = paste(image, png, boxes)
             if changed(image, png, boxes) >= min_change:
                 return self._save(png)
         return None
@@ -126,6 +129,34 @@ def changed(before_path, after_png, boxes=()):
         return [small.pixelColor(x, y).value() for y in range(12) for x in range(16)]
 
     return max(abs(a - b) for a, b in zip(cells(before), cells(after)))
+
+
+def paste(original_path, edited_png, boxes):
+    """The original picture with only the edited boxes taken from the edit, blended in at the edges.
+
+    The image model round-trips the whole picture through its VAE even when it only repaints the mask, which
+    softens every pixel a little; over several edits that adds up, so everything outside the boxes is kept as is.
+    """
+    from PySide6.QtCore import QBuffer, Qt
+    from PySide6.QtGui import QImage, QPainter
+
+    original = QImage(original_path).convertToFormat(QImage.Format_ARGB32)
+    edited = QImage.fromData(edited_png).convertToFormat(QImage.Format_ARGB32)
+    if original.isNull() or edited.size() != original.size():
+        return edited_png
+    w, h = original.width(), original.height()
+    mask = QImage.fromData(mask_png(w, h, boxes)).convertToFormat(QImage.Format_Grayscale8)
+    # Shrinking and regrowing the mask blurs its edges, so the edit fades into the original over ~12 px
+    feathered = mask.scaled(max(1, w // 12), max(1, h // 12), Qt.IgnoreAspectRatio, Qt.SmoothTransformation).scaled(
+        w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+    edited.setAlphaChannel(feathered)
+    painter = QPainter(original)
+    painter.drawImage(0, 0, edited)
+    painter.end()
+    buffer = QBuffer()
+    buffer.open(QBuffer.WriteOnly)
+    original.convertToFormat(QImage.Format_RGB32).save(buffer, "PNG")
+    return bytes(buffer.data())
 
 
 def mask_png(width, height, boxes, pad=0.15):

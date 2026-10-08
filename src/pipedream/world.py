@@ -13,8 +13,12 @@ import platformdirs
 # e.g. ~/.cache/pipedream on Linux, rather than wherever the user launched from
 DEFAULT_CACHE_DIR = platformdirs.user_cache_dir("pipedream", appauthor=False)
 
-# A first paragraph at least this long is a room description rather than a message like "Your lamp is glowing."
+# A first paragraph that opens like this, and is long enough, is a room description rather than something
+# happening there ("Someone carrying a large bag is leaning against the wall"). Telling two same-named places apart
+# needs that certainty: wrongly merging look-alike rooms costs a picture, wrongly splitting one room costs the map.
 _DESCRIPTION_LENGTH = 50
+_DESCRIPTION_START = re.compile(r"(you are|you're|this is|you stand|you find yourself|you have come|you have entered)\b",
+                                re.IGNORECASE)
 
 
 @dataclass
@@ -27,6 +31,9 @@ class Place:
     image: str = ""  # current picture: the base with any edits applied
     edits: list = field(default_factory=list)  # {"edit": instruction, "target": thing} applied to the base, in order
     exits: dict = field(default_factory=dict)  # command -> place id, as learned by moving
+    # What else the game has said is here on a later visit ("Someone carrying a large bag is leaning against the
+    # wall"), each with the picture showing it. Not part of `image`, since a visitor can leave while you're away.
+    visitors: dict = field(default_factory=dict)
     visited: float = 0.0
 
     @property
@@ -47,7 +54,9 @@ def _description(text, name):
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if lines and _key(lines[0]) == _key(name):
         lines = lines[1:]
-    return lines[0] if lines and len(lines[0]) >= _DESCRIPTION_LENGTH else ""
+    if lines and len(lines[0]) >= _DESCRIPTION_LENGTH and _DESCRIPTION_START.match(lines[0]):
+        return lines[0]
+    return ""
 
 
 def _similar(a, b):
@@ -70,22 +79,26 @@ class World:
         self.places = {}
         self.current = None  # the Place the player is in, None before the first place or in the dark
         self.titled = False  # whether the game prints room titles
+        self.landmarks = {}  # big features seen from several places, name -> how they look, e.g. the white house
+        self.news = []  # lines the last arrival printed that the place's first description didn't have
         self._load()
 
     def reset(self):
         shutil.rmtree(self.folder, ignore_errors=True)
-        self.places, self.current, self.titled = {}, None, False
+        self.places, self.current, self.titled, self.landmarks = {}, None, False, {}
 
     def arrive(self, name, text, command):
-        """Move the player to the named place. Returns (place, is_new)."""
+        """Move the player to the named place. Returns (place, is_new) and sets `news`."""
         previous = self.current
         place = self._find(name, text, command)
         is_new = place is None
         if is_new:
             place = Place(str(uuid.uuid4()), name, text)
             self.places[place.id] = place
-        elif text not in place.text:
-            place.text += "\n" + text
+        lines = [line.strip() for line in text.splitlines()]
+        start = next((i + 1 for i, line in enumerate(lines) if _key(line) == place.key), 0)  # after the title
+        self.news = [] if is_new else [line for line in lines[start:] if len(line) > 3 and line not in place.text
+                                       and not line.startswith("Your ")]
         if previous and previous is not place and command:
             previous.exits[command.strip().lower()] = place.id
         place.visited = time.time()
@@ -123,13 +136,14 @@ class World:
             for place in self.places.values():  # worlds saved before edits had targets
                 place.edits = [e if isinstance(e, dict) else {"edit": e, "target": ""} for e in place.edits]
             self.titled = data.get("titled", False)
+            self.landmarks = data.get("landmarks", {})
         except (ValueError, TypeError, KeyError) as e:
             print(f"[!] Ignoring unreadable world file {self.file}: {e}")
             self.places = {}
 
     def save(self):
         self.folder.mkdir(parents=True, exist_ok=True)
-        data = {"titled": self.titled, "places": [asdict(p) for p in self.places.values()]}
+        data = {"titled": self.titled, "landmarks": self.landmarks, "places": [asdict(p) for p in self.places.values()]}
         tmp = self.file.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, indent=1))
         tmp.replace(self.file)

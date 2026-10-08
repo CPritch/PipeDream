@@ -123,6 +123,8 @@ def clean_prompt(prompt):
     for sentence in re.split(r"(?<=[.!?])\s+", prompt):
         if not sentence or _EXITS.search(sentence) or re.match(r"(no|nothing|none|there (is|are) no)\b", sentence, re.I):
             continue
+        if re.fullmatch(r"[\w ]{1,20}:\s*[\w ,'-]{0,40}[.!?]?", sentence):  # "Outdoors: true." "Landmarks: white house."
+            continue
         sentence = _NEGATED_PHRASE.sub("", sentence)
         if _NEGATION.search(sentence):
             continue
@@ -143,7 +145,25 @@ def _tidy(sentence):
     sentence = re.sub(r"\b(with|and|or)\s+(?:and|or)\b", r"\1", sentence)
     sentence = re.sub(r"\s+(?:and|or)(?=\s*[.,;!?])", "", sentence)
     sentence = re.sub(r"\s+(?:leading|running|winding|stretching|heading|going)(?=\s+(?:and|or)\b|\s*[,;])", "", sentence)
+    # A clause left with only its verb ("The room holds, and the floor is bare") goes, up to its comma
+    sentence = re.sub(r"^[^,]*\b(?:holds|contains|has|have|features|shows|is|are)\s*,\s*(?:and\s+|but\s+)?", "", sentence)
     sentence = re.sub(r"\s+([.,;!?])", r"\1", re.sub(r"\s{2,}", " ", sentence)).strip()
     sentence = re.sub(r"^[,;]\s*", "", sentence)
     sentence = re.sub(r"[,;]\s*([.!?])$", r"\1", sentence)
     return sentence if not sentence or sentence[-1] in ".!?" else sentence + "."
+
+
+def apply_landmarks(prompt, landmarks):
+    """Describe each recurring landmark the same way wherever it's seen, so the white house stays one house:
+    "A white house, all windows boarded" -> "A two-storey white clapboard farmhouse ..., all windows boarded"."""
+    for name, look in landmarks.items():
+        body = re.sub(r"^(a|an|the)\s+", "", look.strip().rstrip("."), flags=re.IGNORECASE)
+
+        def described(match):
+            if not match[1]:
+                return body[:1].upper() + body[1:] if match[0][0].isupper() else body
+            article = match[1] if match[1].lower() == "the" else ("an" if body[:1].lower() in "aeiou" else "a")
+            return f"{article.capitalize() if match[1][0].isupper() else article} {body}"
+
+        prompt = re.sub(rf"\b(?:(a|an|the)\s+)?{re.escape(name)}\b", described, prompt, count=1, flags=re.IGNORECASE)
+    return prompt
