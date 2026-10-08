@@ -76,6 +76,18 @@ def has_no_visible_effect(command, titled):
     return words[0] in _NO_VISIBLE_EFFECT or (titled and (len(words) == 1 or words[0] == "go") and words[0] in _DIRECTIONS)
 
 
+def command_object(command):
+    """What a command acts on, as the game names it: "open trap door" -> "trap door", "put painting in case" ->
+    "case", "kill troll with sword" -> "troll". Empty when there's nothing specific ("take all", "jump")."""
+    words = (command or "").strip().lower().split()
+    rest = re.sub(r"^(up|down|on|off|out|over|at|to)\s+", "", " ".join(words[1:]))  # "pick up lamp", "turn on lamp"
+    if placed := re.match(r".+?\s+(?:in|into|on|onto|inside|under)\s+(.+)", rest):
+        rest = placed[1]  # what changes is where it was put
+    rest = re.sub(r"\s+(?:with|using|from)\s+.+$", "", rest)
+    rest = re.sub(r"^(the|a|an)\s+", "", rest).strip()
+    return "" if rest in ("", "all", "everything", "it", "them") else rest
+
+
 def is_dark(text, title=None):
     """Whether the player can't see. Inform games title a dark room "Darkness"."""
     return (title is None or title.lower() == "darkness") and bool(_DARK.search(text))
@@ -87,8 +99,9 @@ def without_possessions(text):
 
 
 _DIRECTION = r"(?:(?:north|south)(?:-?(?:east|west))?|east|west)"
-_COMPASS = re.compile(rf"(?:\b(?:to|toward|towards|from|on|at)\s+the\s+)?\b{_DIRECTION}(?:ern|ward|wards)?\b,?",
-                      re.IGNORECASE)
+# "to the north" goes entirely, but in "at the north end" only the direction does
+_COMPASS = re.compile(rf"(?:\b(?:to|toward|towards|from|on|at)\s+the\s+(?={_DIRECTION}(?:ern|ward|wards)?\b(?!\s+[a-z]{{3,}}\b(?<!\band)(?<!\bor))))?"
+                      rf"\b{_DIRECTION}(?:ern|ward|wards)?\b", re.IGNORECASE)
 _NEGATION = re.compile(r"\b(no|not|none|nothing|without|never|nor|cannot|can't|isn't|aren't|doesn't|don't|nowhere)\b",
                        re.IGNORECASE)
 # "with no door", "without windows", "no visible openings or entrances"
@@ -98,7 +111,8 @@ _NEGATED_PHRASE = re.compile(r",?\s*\b(?:with|and|but|having)?\s*\b(?:no|without
 _EXITS = re.compile(rf"\b(exits?|leads? to|paths? to)\b|\b({_DIRECTION}|up|down|in|out)\s*:", re.IGNORECASE)
 # What's left of "A doorway is to the east" once the direction has gone
 _DANGLING = re.compile(r"\b(is|are|was|were|lies|lie|leads?|goes|go|runs|opens|stands|sits|winds|continues|extends|heads|"
-                       r"facing|faces|toward|towards|beyond|into|onto|to|from|of|with|at|near)[.!?]?$", re.IGNORECASE)
+                       r"facing|faces|toward|towards|beyond|into|onto|to|from|of|with|at|near|holds|contains|has|features|shows)[.!?]?$",
+                       re.IGNORECASE)
 
 
 def clean_prompt(prompt):

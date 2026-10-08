@@ -1,5 +1,8 @@
+import base64
 import json
 import re
+from typing import NamedTuple
+
 import requests
 
 from pipedream.gametext import clean_prompt
@@ -9,8 +12,9 @@ from pipedream.gametext import clean_prompt
 PLACE_SCHEMA = {"type": "object", "properties": {"prompt": {"type": "string"}}, "required": ["prompt"]}
 CHANGE_SCHEMA = {
     "type": "object",
-    "properties": {"kind": {"type": "string", "enum": ["none", "change", "dark"]}, "edit": {"type": "string"}},
-    "required": ["kind", "edit"],
+    "properties": {"kind": {"type": "string", "enum": ["none", "change", "remove", "dark"]},
+                   "target": {"type": "string"}, "edit": {"type": "string"}},
+    "required": ["kind", "target", "edit"],
 }
 LOCATION_SCHEMA = {"type": "object", "properties": {"location": {"type": "string"}}, "required": ["location"]}
 
@@ -18,8 +22,8 @@ LOCATION_SCHEMA = {"type": "object", "properties": {"location": {"type": "string
 _PICTURE_RULES = (
     "Never mention directions (north, south, east, west), exits or where paths lead. "
     "Never mention words, signs, labels or writing. "
-    "Never say what is absent, hidden or not visible, and never use the words no, not or without: describe only "
-    "what is there. "
+    "Never say what is absent, hidden or not visible, and never use the words no, not or without: describe what is "
+    "there instead. "
     "The viewer is the player: never include the player, 'you', or anything the player is carrying."
 )
 
@@ -27,7 +31,8 @@ DESCRIBE_PLACE = (
     "You turn a text adventure's description of a place into a prompt for an image model.\n"
     "Write under 50 words of plain visual description: the setting, its architecture and lighting, the notable "
     "objects in it, and any creatures or people the text says are here. Include only what the text says is here; "
-    "don't invent objects, doors or details. "
+    "never invent people, creatures, objects, doors or light sources. Describe states so a painter can draw them, e.g. 'boarded up' as "
+    "'with wooden planks nailed across'. "
     f"{_PICTURE_RULES}\n"
     "Example: 'A cramped kitchen with a worn wooden table holding a glass bottle of water and a brown sack. "
     "A dark staircase climbs into shadow beside a small open window.'"
@@ -38,15 +43,23 @@ ASSESS_CHANGE = (
     "Decide whether the game's latest reply visibly changes that picture.\n"
     "kind:\n"
     "- none: nothing in the picture changes. This includes failed actions, inventory, score, sounds, smells, "
-    "conversation, picking up or dropping small items, and anything about the player's own possessions. "
-    "For example 'Taken.', 'Dropped.', 'You are carrying a lamp.', 'The troll fends you off.', 'Nothing happens.'\n"
+    "conversation, and anything about the player's own possessions. "
+    "For example 'You are carrying a lamp.', 'The troll fends you off.', 'Nothing happens.'\n"
+    "- remove: something shown in the picture is taken away, or a creature dies and vanishes. "
+    "For example 'take lamp' answered 'Taken.' removes the lamp.\n"
     "- change: the scene visibly changes. A door, window, hatch or container opens or closes; something is moved "
-    "aside, revealed, broken, lit or put out; a creature or person arrives, leaves, is knocked out or killed.\n"
+    "aside, revealed, broken, lit or put out; something is put down or placed; a creature arrives or is knocked out.\n"
     "- dark: the player can no longer see anything.\n"
-    "edit: empty unless kind is change. Otherwise one short sentence describing how that part of the scene looks "
-    "now, e.g. 'The trap door in the floor stands open, revealing a rickety staircase.' or 'The troll is gone; "
-    f"wisps of black fog hang where it stood.' {_PICTURE_RULES}"
+    "target: the thing in the picture that changes or is removed, in two or three words, using the game's own name "
+    "for it (e.g. 'brass lantern', 'troll', 'trap door', 'trophy case'). Empty if kind is none or dark.\n"
+    "edit: an instruction for an image editor, starting with a verb, e.g. 'Remove the brass lantern.', 'Open the "
+    "trap door, revealing a rickety staircase descending into darkness.', 'Remove the troll and its axe, leaving "
+    "wisps of black fog where it stood.', 'Make the troll lie unconscious on the floor.', 'Place a framed painting "
+    "inside the trophy case.' Empty if kind is none or "
+    f"dark. {_PICTURE_RULES}"
 )
+
+FIND = "Locate the {thing} in the image and output its bbox_2d coordinates in JSON. If there is no {thing} in the image, output an empty list."
 
 LOCATE = (
     "You read a text adventure's latest reply. If it describes the place the player is in, answer with a short "
@@ -55,28 +68,54 @@ LOCATE = (
 )
 
 
+class Verdict(NamedTuple):
+    kind: str  # none, change, remove or dark
+    target: str = ""  # what in the picture the change applies to
+    edit: str = ""  # instruction for the image editor
+
+
+NO_CHANGE = Verdict("none")
+
+
 class Director:
     def __init__(self, llm_url):
         self.llm_url = llm_url
 
     def describe_place(self, name, text):
         """A prompt for painting a place the player has just found, or None."""
-        reply = self._ask(DESCRIBE_PLACE, f"PLACE: {name}\n\n{text}", PLACE_SCHEMA)
-        prompt = clean_prompt(reply.get("prompt", "")) if reply else ""
+        for temperature in (0.2, 0.7):
+            reply = self._ask(DESCRIBE_PLACE, f"PLACE: {name}\n\n{text}", PLACE_SCHEMA, temperature=temperature)
+            prompt = clean_prompt(reply.get("prompt", "")) if reply else ""
+            # Too little survives when the model describes mostly what isn't there; a warmer second try differs
+            if len(prompt) >= 20:
+                return prompt
         return prompt if len(prompt) >= 5 else None
 
     def assess(self, place, text, command):
-        """What the reply does to the current place's picture: ("none" | "change" | "dark", edit instruction)."""
-        painted = " ".join([place.prompt, *place.edits])
+        """What the reply does to the current place's picture, as a Verdict."""
+        painted = " ".join([place.prompt, *(edit["edit"] for edit in place.edits)])
         reply = self._ask(ASSESS_CHANGE, f"PLACE: {place.name}\nTHE PICTURE SHOWS: {painted}\n\n"
                                          f"PLAYER: {command}\nGAME: {text}", CHANGE_SCHEMA)
-        if not reply:
-            return "none", ""
-        kind = reply.get("kind", "none")
-        edit = clean_prompt(reply.get("edit", "")) if kind == "change" else ""
-        if kind not in ("change", "dark") or (kind == "change" and len(edit) < 5):
-            return "none", ""
-        return kind, edit
+        kind = (reply or {}).get("kind", "none")
+        if kind == "dark":
+            return Verdict("dark")
+        if kind not in ("change", "remove"):
+            return NO_CHANGE
+        target = reply.get("target", "").strip().strip(".")
+        edit = clean_prompt(reply.get("edit", ""))
+        if kind == "remove" and len(edit) < 5 and target:
+            edit = f"Remove the {target}."
+        return Verdict(kind, target, edit) if len(edit) >= 5 else NO_CHANGE
+
+    def find(self, image, thing):
+        """Where `thing` is in the picture: a list of [x1, y1, x2, y2] boxes in 0-1000 coordinates, or []."""
+        with open(image, "rb") as f:
+            data = base64.b64encode(f.read()).decode()
+        content = [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{data}"}},
+                   {"type": "text", "text": FIND.format(thing=thing)}]
+        reply = self._chat([{"role": "user", "content": content}], max_tokens=120, temperature=0)
+        boxes = [[int(n) for n in box] for box in re.findall(r"\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]", reply or "")]
+        return [b for b in boxes if b[0] < b[2] <= 1000 and b[1] < b[3] <= 1000][:3]
 
     def locate(self, text):
         """For games without room titles: the name of the place the text describes, or None."""
@@ -84,20 +123,10 @@ class Director:
         location = (reply or {}).get("location", "").strip().strip(".")
         return location if location and location.lower() != "none" else None
 
-    def _ask(self, system, user, schema, max_tokens=200):
-        try:
-            response = requests.post(f"{self.llm_url}/v1/chat/completions", timeout=120, json={
-                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-                "temperature": 0.2,
-                "max_tokens": max_tokens,
-                # Hybrid reasoning models (e.g. Qwen3-4B) otherwise think first and leave the JSON reply empty
-                "chat_template_kwargs": {"enable_thinking": False},
-                "response_format": {"type": "json_schema", "json_schema": {"name": "reply", "schema": schema}},
-            })
-            response.raise_for_status()
-            content = response.json()["choices"][0]["message"]["content"]
-        except (requests.RequestException, KeyError, ValueError) as e:
-            print(f"[!] Director Error: {e}")
+    def _ask(self, system, user, schema, max_tokens=200, temperature=0.2):
+        content = self._chat([{"role": "system", "content": system}, {"role": "user", "content": user}], max_tokens,
+                             temperature, {"type": "json_schema", "json_schema": {"name": "reply", "schema": schema}})
+        if content is None:
             return None
         try:
             return json.loads(content)
@@ -106,5 +135,23 @@ class Director:
             match = re.fullmatch(r'\s*\{\s*"(\w+)"\s*:\s*"(.*?[.!?])[^.!?]*', content, re.DOTALL)
             if match and len(schema["required"]) == 1:
                 return {match[1]: match[2]}
+            print(f"[!] Director Error: {e}")
+            return None
+
+    def _chat(self, messages, max_tokens, temperature, response_format=None):
+        body = {
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            # Hybrid reasoning models (e.g. Qwen3-4B) otherwise think first and leave the JSON reply empty
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+        if response_format:
+            body["response_format"] = response_format
+        try:
+            response = requests.post(f"{self.llm_url}/v1/chat/completions", timeout=120, json=body)
+            response.raise_for_status()
+            return response.json()["choices"][0]["message"]["content"]
+        except (requests.RequestException, KeyError, ValueError) as e:
             print(f"[!] Director Error: {e}")
             return None

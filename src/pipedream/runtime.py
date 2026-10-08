@@ -80,6 +80,10 @@ FOUR_STEP = {"sample_method": "euler", "sample_steps": 4, "guidance": {"txt_cfg"
 QWEN_TURBO = {"sample_method": "euler", "sample_steps": 6, "custom_sigmas": [1.0, 0.9375, 0.875, 0.75, 0.5, 0.25, 0.0],
               "guidance": {"txt_cfg": 1.0}}
 
+# Lets the director see a picture, to find what a change applies to (e.g. the lamp the player just took)
+_QWEN3VL_4B_VISION = _hf("Qwen/Qwen3-VL-4B-Instruct-GGUF", "mmproj-Qwen3VL-4B-Instruct-F16.gguf",
+                         836180256, "256f3a43bd4205ffef48d6b92715e1e70b5b0e9aef06522584967513a9985331")
+
 # Where it's good enough, the image model's text encoder doubles as the director LLM, so there's only one
 # language model to download. Otherwise a profile names its own "director".
 # Timings are for a 768x576 scene on an RTX 5060 Laptop GPU.
@@ -95,6 +99,7 @@ PROFILES = {
                    345053056, "34e076dc1e8a15321e1e07be5111d59cf16dd10b804b7c7e20b4de29013427e0"),
         "llm": _hf("Qwen/Qwen3-VL-4B-Instruct-GGUF", "Qwen3VL-4B-Instruct-Q4_K_M.gguf",
                    2497281664, "66358cb18bb6b3b1b6675aa412c7a88ef01d228f481184d13668e5201c730a0a"),
+        "director_vision": _QWEN3VL_4B_VISION,
     }, FOUR_STEP, quantize="q8_0", devices=("CUDA",)),
     # Qwen-Image-2.1 with Viggle's 6-step turbo (non-commercial), the moodiest look, ~12 s
     "qwen-image": ImageProfile({
@@ -118,6 +123,7 @@ PROFILES = {
         # Plain Qwen3-4B misreads openings and copies "You are..." into prompts, which paints the player in
         "director": _hf("Qwen/Qwen3-VL-4B-Instruct-GGUF", "Qwen3VL-4B-Instruct-Q4_K_M.gguf",
                         2497281664, "66358cb18bb6b3b1b6675aa412c7a88ef01d228f481184d13668e5201c730a0a"),
+        "director_vision": _QWEN3VL_4B_VISION,
     }, FOUR_STEP),
 }
 DEFAULT_PROFILE = "mage-flow"
@@ -344,8 +350,9 @@ class LocalBackends:
             self.image_url = f"http://127.0.0.1:{port}"
         if not self.llm_url:
             port = _free_port()
+            sight = ["--mmproj", paths["director_vision"]] if "director_vision" in paths else []
             self._spawn("llama-server", [
-                paths["llama"], "--port", str(port), "-m", paths.get("director", paths["llm"]),
+                paths["llama"], "--port", str(port), "-m", paths.get("director", paths["llm"]), *sight,
                 "--device", llm_device, "-c", "8192", "-np", "1",
             ])
             self.llm_url = f"http://127.0.0.1:{port}"

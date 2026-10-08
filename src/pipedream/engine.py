@@ -10,7 +10,8 @@ from pathlib import Path
 import pexpect
 from pipedream import __version__
 from pipedream.director import Director
-from pipedream.gametext import find_title, from_title, has_no_visible_effect, is_dark, unwrap, without_possessions
+from pipedream.gametext import (command_object, find_title, from_title, has_no_visible_effect, is_dark, unwrap,
+                                without_possessions)
 from pipedream.imagegen import ImageGenerator, Painter
 from pipedream.runtime import LocalBackends, PROFILES, DEFAULT_PROFILE
 from pipedream.world import DEFAULT_CACHE_DIR, World
@@ -215,20 +216,33 @@ class PipeDream:
         if place is None or not place.image or has_no_visible_effect(command, self.world.titled):
             print("   > No visual changes.")
             return self.report_status("Ready")
-        kind, edit = self.director.assess(place, text, command)
-        if kind == "dark":
+        verdict = self.director.assess(place, text, command)
+        if verdict.kind == "dark":
             print("   > Dark.")
             self.world.current = None
             return self._show(scene_id, self.painter.darkness())
-        if kind != "change" or not self.painter.edits:
+        if verdict.kind not in ("change", "remove") or not self.painter.edits:
             print("   > No visual changes.")
             return self.report_status("Ready")
-        print(f"   > Edit: {edit}")
         self.report_status("Generating Image...")
-        place.image = self.painter.edit(place.image, edit)
-        place.edits.append(edit)
+        # The player's own words name the thing best; the director's guess can drift ("wooden door" for "trap door")
+        target = command_object(command) or verdict.target
+        image = self._edit(place.image, verdict.edit, target, must_find=verdict.kind == "remove")
+        if image is None:
+            print(f"   > No {target} in the picture to remove.")
+            return self.report_status("Ready")
+        place.image = image
+        place.edits.append({"edit": verdict.edit, "target": target})
         self.world.save()
         self._show(scene_id, place.image)
+
+    def _edit(self, image, instruction, target, must_find=False):
+        """Apply an edit, confined to where the target is in the picture when the director can find it."""
+        boxes = self.director.find(image, target) if target else []
+        print(f"   > Edit: {instruction}" + (f" (at the {target})" if boxes else ""))
+        if must_find and not boxes:
+            return None  # the picture never showed it, so there's nothing to take away
+        return self.painter.edit(image, instruction, boxes)
 
     def _repaint(self):
         place = self.world.current
@@ -238,7 +252,7 @@ class PipeDream:
         self.report_status("Generating Image...")
         image = place.base = self.painter.paint(place.prompt, seed=-1)
         for edit in place.edits:
-            image = self.painter.edit(image, edit)
+            image = self._edit(image, edit["edit"], edit["target"]) or image
         place.image = image
         self.world.save()
         self._show(self.latest_scene, image)

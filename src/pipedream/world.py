@@ -25,7 +25,7 @@ class Place:
     prompt: str = ""  # what the base picture was painted from
     base: str = ""  # picture of the place as first described
     image: str = ""  # current picture: the base with any edits applied
-    edits: list = field(default_factory=list)  # edit instructions applied to the base, in order
+    edits: list = field(default_factory=list)  # {"edit": instruction, "target": thing} applied to the base, in order
     exits: dict = field(default_factory=dict)  # command -> place id, as learned by moving
     visited: float = 0.0
 
@@ -120,6 +120,8 @@ class World:
         try:
             data = json.loads(self.file.read_text())
             self.places = {p["id"]: Place(**p) for p in data.get("places", [])}
+            for place in self.places.values():  # worlds saved before edits had targets
+                place.edits = [e if isinstance(e, dict) else {"edit": e, "target": ""} for e in place.edits]
             self.titled = data.get("titled", False)
         except (ValueError, TypeError, KeyError) as e:
             print(f"[!] Ignoring unreadable world file {self.file}: {e}")

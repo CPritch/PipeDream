@@ -101,6 +101,7 @@ ApplicationWindow {
                         id: inputField
                         Layout.fillWidth: true
                         placeholderText: "Enter command..."
+                        placeholderTextColor: "#8a8a8a"
                         color: "white"
                         font.family: "Courier New"
                         font.pixelSize: 14
