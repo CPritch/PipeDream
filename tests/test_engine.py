@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from pipedream import games
+from pipedream.director import NO_CHANGE, Verdict
 from pipedream.engine import PipeDream, session_name
 
 MOCK_GAME = Path(games.__file__).parent / "mock_game.py"
@@ -28,8 +29,8 @@ class FakePainter:
         self.painted.append(prompt)
         return self._file(f"paint{len(self.painted)}")
 
-    def edit(self, image, instruction):
-        self.edited.append((Path(image).name, instruction))
+    def edit(self, image, instruction, boxes=()):
+        self.edited.append((Path(image).name, instruction, boxes))
         return self._file(f"edit{len(self.edited)}")
 
     def darkness(self):
@@ -41,12 +42,14 @@ class FakePainter:
         return str(path)
 
 
-def stub_ai(engine, tmp_path, changes=None, delay=None):
-    """No network: the director answers from `changes` ({command: (kind, edit)}) and pictures are fake files."""
+def stub_ai(engine, tmp_path, changes=None, delay=None, visible=("rug", "lamp", "window")):
+    """No network: the director answers from `changes` ({command: Verdict}), finds only the `visible` things,
+    and pictures are fake files."""
     changes = changes or {}
     engine.director.describe_place = lambda name, text: f"picture of {name}"
-    engine.director.assess = lambda place, text, command: changes.get(command, ("none", ""))
+    engine.director.assess = lambda place, text, command: changes.get(command, NO_CHANGE)
     engine.director.locate = lambda text: None
+    engine.director.find = lambda image, thing: [[100, 200, 300, 400]] if thing in visible else []
     engine.painter = FakePainter(tmp_path, delay)
     return engine.painter
 
@@ -175,18 +178,26 @@ def test_brief_revisits_reuse_the_place_and_any_route_back(tmp_path):
 
 def test_changes_in_a_place_edit_its_picture(tmp_path):
     engine = PipeDream(["zork1.z3"], cache_dir=tmp_path)
-    painter = stub_ai(engine, tmp_path, changes={"move rug": ("change", "The rug is heaped aside over a trap door.")})
+    painter = stub_ai(engine, tmp_path, changes={
+        "take lamp": Verdict("remove", "lamp", "Remove the lamp."),
+        "take leaflet": Verdict("remove", "leaflet", "Remove the leaflet."),  # never painted, so nothing to remove
+        "move rug": Verdict("change", "rug", "Drag the rug aside, revealing a trap door."),
+        "open trap door": Verdict("change", "trap door", "Open the trap door."),  # not found: edit the whole picture
+    })
     shown = []
     engine.custom_image = shown.append
 
-    feed(engine, [(None, LIVING_ROOM), ("take lamp", "Taken."), ("move rug", "With a great effort, the rug is "
-          "moved to one side of the room, revealing the dusty cover of a closed trap door."), ("look", LIVING_ROOM)])
+    feed(engine, [(None, LIVING_ROOM), ("take lamp", "Taken."), ("take leaflet", "Taken."), ("move rug", "With a "
+          "great effort, the rug is moved to one side of the room, revealing the dusty cover of a closed trap door."),
+          ("open trap door", "The door reluctantly opens."), ("look", LIVING_ROOM)])
 
-    assert painter.edited == [("paint1.png", "The rug is heaped aside over a trap door.")]
+    assert painter.edited == [("paint1.png", "Remove the lamp.", [[100, 200, 300, 400]]),
+                              ("edit1.png", "Drag the rug aside, revealing a trap door.", [[100, 200, 300, 400]]),
+                              ("edit2.png", "Open the trap door.", [])]
     living_room = engine.world.current
-    assert living_room.edits == ["The rug is heaped aside over a trap door."]
-    assert Path(living_room.image).name == "edit1.png"
-    assert [Path(p).name for p in shown] == ["paint1.png", "edit1.png", "edit1.png"]
+    assert [e["target"] for e in living_room.edits] == ["lamp", "rug", "trap door"]
+    assert Path(living_room.image).name == "edit3.png"
+    assert [Path(p).name for p in shown] == ["paint1.png", "edit1.png", "edit2.png", "edit3.png", "edit3.png"]
 
 
 def test_darkness_is_shown_as_darkness_and_light_finds_the_place(tmp_path):
@@ -218,7 +229,7 @@ def test_the_known_route_never_overrides_the_game(tmp_path):
 
 def test_repaint_paints_the_place_again_and_reapplies_its_edits(tmp_path):
     engine = PipeDream(["zork1.z3"], cache_dir=tmp_path)
-    painter = stub_ai(engine, tmp_path, changes={"open window": ("change", "The window is wide open.")})
+    painter = stub_ai(engine, tmp_path, changes={"open window": Verdict("change", "window", "Open the window wide.")})
     shown = []
     engine.custom_image = shown.append
 
@@ -226,7 +237,8 @@ def test_repaint_paints_the_place_again_and_reapplies_its_edits(tmp_path):
     engine._repaint()
 
     assert painter.painted == ["picture of Living Room", "picture of Living Room"]
-    assert painter.edited == [("paint1.png", "The window is wide open."), ("paint2.png", "The window is wide open.")]
+    box = [[100, 200, 300, 400]]
+    assert painter.edited == [("paint1.png", "Open the window wide.", box), ("paint2.png", "Open the window wide.", box)]
     assert Path(shown[-1]).name == "edit2.png"
 
 

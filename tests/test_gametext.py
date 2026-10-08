@@ -1,6 +1,6 @@
 import pytest
 
-from pipedream.gametext import (clean_prompt, find_title, from_title, has_no_visible_effect, is_dark, unwrap,
+from pipedream.gametext import (clean_prompt, command_object, find_title, from_title, has_no_visible_effect, is_dark, unwrap,
                                 without_possessions)
 
 
@@ -88,3 +88,11 @@ def test_clean_prompt(prompt, cleaned):
 ])
 def test_has_no_visible_effect(command, titled, expected):
     assert has_no_visible_effect(command, titled) == expected
+
+
+@pytest.mark.parametrize("command, thing", [
+    ("open trap door", "trap door"), ("put painting in case", "case"), ("kill troll with sword", "troll"),
+    ("take the lamp", "lamp"), ("pick up lamp", "lamp"), ("take all", ""), ("jump", ""), (None, ""),
+])
+def test_command_object(command, thing):
+    assert command_object(command) == thing

@@ -11,8 +11,8 @@ import zipfile
 import pytest
 
 from pipedream import runtime
-from pipedream.director import Director
-from pipedream.imagegen import ImageGenerator, Painter, darkness_png
+from pipedream.director import Director, Verdict
+from pipedream.imagegen import ImageGenerator, Painter, changed, darkness_png, mask_png
 from pipedream.world import Place
 
 
@@ -70,19 +70,36 @@ def test_director_describes_a_new_place_without_directions(server):
 
 
 @pytest.mark.parametrize("reply, expected", [
-    ({"kind": "change", "edit": "The trap door stands open."}, ("change", "The trap door stands open.")),
-    ({"kind": "none", "edit": "The lamp is gone."}, ("none", "")),
-    ({"kind": "dark", "edit": ""}, ("dark", "")),
-    ({"kind": "change", "edit": "Exits: north."}, ("none", "")),  # nothing left to paint once cleaned
+    ({"kind": "change", "target": "trap door", "edit": "Open the trap door."}, Verdict("change", "trap door", "Open the trap door.")),
+    ({"kind": "remove", "target": "brass lantern", "edit": ""}, Verdict("remove", "brass lantern", "Remove the brass lantern.")),
+    ({"kind": "none", "target": "lamp", "edit": "Remove the lamp."}, Verdict("none")),
+    ({"kind": "dark", "target": "", "edit": ""}, Verdict("dark")),
+    ({"kind": "change", "target": "", "edit": "Exits: north."}, Verdict("none")),  # nothing left to paint once cleaned
 ])
 def test_director_assesses_changes_in_the_current_place(server, reply, expected):
     url, routes, seen = server
     routes[("POST", "/v1/chat/completions")] = chat_reply(reply)
-    living_room = Place("1", "Living Room", "Living Room", prompt="A living room with a rug.", edits=["The rug is aside."])
+    living_room = Place("1", "Living Room", "Living Room", prompt="A living room with a rug.",
+                        edits=[{"edit": "Drag the rug aside.", "target": "rug"}])
 
     assert Director(url).assess(living_room, "The door reluctantly opens.", "open trap door") == expected
     content = json.loads(seen[0][2])["messages"][1]["content"]
-    assert "A living room with a rug. The rug is aside." in content and "open trap door" in content
+    assert "A living room with a rug. Drag the rug aside." in content and "open trap door" in content
+
+
+def test_director_finds_things_in_the_picture(server, tmp_path):
+    url, routes, seen = server
+    picture = tmp_path / "room.png"
+    picture.write_bytes(b"PNG")
+    reply = '```json\n[\n\t{"bbox_2d": [252, 276, 370, 603], "label": "brass lantern"},\n\t{"bbox_2d": [5, 5, 3, 3]}\n]\n```'
+    routes[("POST", "/v1/chat/completions")] = json_reply({"choices": [{"message": {"content": reply}}]})
+
+    assert Director(url).find(str(picture), "brass lantern") == [[252, 276, 370, 603]]  # the malformed box is dropped
+    image = json.loads(seen[0][2])["messages"][0]["content"][0]["image_url"]["url"]
+    assert image == "data:image/png;base64," + base64.b64encode(b"PNG").decode()
+
+    routes[("POST", "/v1/chat/completions")] = chat_reply("There is no troll in the image.")
+    assert Director(url).find(str(picture), "troll") == []
 
 
 @pytest.mark.parametrize("location, expected", [("Field", "Field"), ("none", None), ("", None)])
@@ -135,22 +152,75 @@ def test_image_generator_raises_when_the_job_fails(server):
         ImageGenerator(url, runtime.FOUR_STEP).generate("A dark forest.")
 
 
-def test_painter_edits_keep_the_style_and_send_the_picture(tmp_path):
-    calls = []
+def png_of(color, w=64, h=48, box=None, inner=None):
+    """A PNG filled with one grey level, optionally with a differently coloured box (0-1000 coordinates)."""
+    from PySide6.QtCore import QBuffer, QRect
+    from PySide6.QtGui import QColor, QImage, QPainter
+    image = QImage(w, h, QImage.Format_RGB32)
+    image.fill(QColor(color, color, color))
+    if box:
+        painter = QPainter(image)
+        painter.fillRect(QRect(box[0] * w // 1000, box[1] * h // 1000, (box[2] - box[0]) * w // 1000,
+                               (box[3] - box[1]) * h // 1000), QColor(inner, inner, inner))
+        painter.end()
+    buffer = QBuffer()
+    buffer.open(QBuffer.WriteOnly)
+    image.save(buffer, "PNG")
+    return bytes(buffer.data())
 
-    class Generator:
-        width, height = 64, 48
 
-        def generate(self, prompt, reference_images=(), seed=-1):
-            calls.append((prompt, list(reference_images), seed))
-            return b"PNG"
+class FakeGenerator:
+    width, height = 64, 48
 
-    painter = Painter(Generator(), str(tmp_path), "Ink", seed=7)
-    base = painter.paint("A cellar.")
-    edited = painter.edit(base, "The trap door is open.")
+    def __init__(self, results):
+        self.results, self.calls = list(results), []
 
-    assert calls == [("Ink. A cellar.", [], 7), ("Ink. The trap door is open. Keep everything else exactly the same.", [base], 7)]
-    assert open(edited, "rb").read() == b"PNG" and edited != base
+    def generate(self, prompt, reference_images=(), seed=-1, init_image=None, mask=None):
+        self.calls.append({"prompt": prompt, "refs": list(reference_images), "seed": seed, "init": init_image, "mask": mask})
+        return self.results.pop(0)
+
+
+def test_painter_edits_keep_the_style_and_only_repaint_the_boxes(tmp_path):
+    base = tmp_path / "base.png"
+    base.write_bytes(png_of(100))
+    lamp = [250, 250, 500, 500]
+    generator = FakeGenerator([png_of(100, box=lamp, inner=20)])
+
+    edited = Painter(generator, str(tmp_path), "Ink", seed=7).edit(str(base), "Remove the lamp.", [lamp])
+
+    call, = generator.calls
+    assert call["prompt"] == "Ink. Remove the lamp. Keep everything else exactly the same."
+    assert call["refs"] == [str(base)] and call["init"] == str(base) and call["seed"] == 7
+    assert call["mask"] == mask_png(64, 48, [lamp])
+    assert open(edited, "rb").read() == png_of(100, box=lamp, inner=20)
+
+
+def test_painter_retries_an_edit_that_changed_nothing(tmp_path):
+    base = tmp_path / "base.png"
+    base.write_bytes(png_of(100))
+    generator = FakeGenerator([png_of(104), png_of(100, box=[0, 0, 500, 500], inner=200)])
+
+    edited = Painter(generator, str(tmp_path), "Ink", seed=7).edit(str(base), "Open the window.")
+
+    assert [c["seed"] for c in generator.calls] == [7, 8] and generator.calls[0]["mask"] is None
+    assert open(edited, "rb").read() == png_of(100, box=[0, 0, 500, 500], inner=200)
+
+
+def test_changed_measures_only_inside_the_boxes(tmp_path):
+    base = tmp_path / "base.png"
+    base.write_bytes(png_of(100))
+    elsewhere = png_of(100, box=[600, 600, 1000, 1000], inner=250)
+
+    assert changed(str(base), elsewhere, [[0, 0, 400, 400]]) == 0
+    assert changed(str(base), elsewhere) > 100
+
+
+def test_mask_covers_each_box_with_a_margin():
+    from PySide6.QtGui import QImage
+    mask = QImage.fromData(mask_png(200, 100, [[250, 250, 500, 500]]))
+    assert mask.pixelColor(75, 37).value() == 255  # inside the box
+    assert mask.pixelColor(46, 22).value() == 255  # in the margin
+    assert mask.pixelColor(150, 80).value() == 0
 
 
 def test_darkness_is_a_valid_near_black_png():
