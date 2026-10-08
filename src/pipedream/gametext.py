@@ -100,7 +100,9 @@ def without_possessions(text):
 
 _DIRECTION = r"(?:(?:north|south)(?:-?(?:east|west))?|east|west)"
 # "to the north" goes entirely, but in "at the north end" only the direction does
-_COMPASS = re.compile(rf"(?:\b(?:to|toward|towards|from|on|at)\s+(?:the\s+)?(?={_DIRECTION}(?:ern|ward|wards)?\b(?!\s+[a-z]{{3,}}\b(?<!\band)(?<!\bor))))?"
+# Words after which a direction was the end of its phrase ("to the south are visible"), not an adjective
+_NOT_NOUNS = r"(?:and|or|are|is|was|were|lie|lies|lead|leads|stand|stands|open|opens|of|with|through|into|beyond|where|which|that)"
+_COMPASS = re.compile(rf"(?:\b(?:to|toward|towards|from|on|at)\s+(?:the\s+)?(?={_DIRECTION}(?:ern|ward|wards)?\b(?!\s+(?!{_NOT_NOUNS}\b)[a-z]{{3,}}\b)))?"
                       rf"\b{_DIRECTION}(?:ern|ward|wards)?\b", re.IGNORECASE)
 _NEGATION = re.compile(r"\b(no|not|none|nothing|without|never|nor|cannot|can't|isn't|aren't|doesn't|don't|nowhere)\b",
                        re.IGNORECASE)
