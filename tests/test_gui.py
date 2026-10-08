@@ -11,7 +11,7 @@ from pipedream.gui import Backend
 
 
 def test_shutdown_while_waiting_for_input_does_not_hang(tmp_path, monkeypatch):
-    monkeypatch.setattr(Director, "describe_place", lambda self, name, text: None)
+    monkeypatch.setattr(Director, "describe_place", lambda self, name, text, *context: None)
     monkeypatch.setattr("pipedream.engine.DEFAULT_CACHE_DIR", str(tmp_path))
 
     app = QGuiApplication.instance() or QGuiApplication([])

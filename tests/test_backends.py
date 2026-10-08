@@ -98,10 +98,10 @@ def test_director_assesses_changes_in_the_current_place(server, reply, expected)
     living_room = Place("1", "Living Room", "Living Room", prompt="A living room with a rug.",
                         edits=[{"edit": "Drag the rug aside.", "target": "rug"}])
 
-    assert Director(url).assess(living_room, "The rug is moved aside, revealing a trap door.", "move rug") == expected
+    assert Director(url).assess(living_room, "The troll is knocked out!", "kill troll with sword") == expected
     content = json.loads(seen[0][2])["messages"][1]["content"]
     assert "THE PICTURE SHOWS: A living room with a rug.\nALREADY CHANGED (don't repeat these):\n- Drag the rug aside." in content
-    assert "THE PLAYER ACTED ON: rug" in content
+    assert "THE PLAYER ACTED ON: troll" in content
 
 
 @pytest.mark.parametrize("command, reply, verdict", [
@@ -109,10 +109,14 @@ def test_director_assesses_changes_in_the_current_place(server, reply, expected)
     ("open the trophy case", "Opened.", Verdict("change", "trophy case", "Open the trophy case.")),
     ("put painting in case", "Done.", Verdict("change", "case", "Place the painting in the case.")),
     ("open trap door", "The door reluctantly opens to reveal a rickety staircase descending into darkness.",
-     Verdict("change", "trap door", "Open the trap door, revealing a rickety staircase descending into darkness.")),
+     Verdict("change", "trap door", "Open the trap door, revealing a rickety staircase descending into darkness.",
+             "rickety staircase")),
     ("open window", "With great effort, you open the window far enough to allow entry.",
      Verdict("change", "window", "Open the window.")),
     ("open window", "The window is already open.", None),
+    ("move rug", "With a great effort, the rug is moved to one side of the room, revealing the dusty cover of a closed trap door.",
+     Verdict("change", "rug", "Replace the rug with bare floor and the dusty cover of a closed trap door; the rug lies "
+                              "crumpled at the edge.", "trap door")),
     ("take all", "brass lantern: Taken.", None),
     ("take lamp", "You already have that!", None),
 ])

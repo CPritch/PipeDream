@@ -30,7 +30,7 @@ class FakePainter:
         self.painted.append(prompt)
         return self._file(f"paint{len(self.painted)}")
 
-    def edit(self, image, instruction, boxes=(), min_change=None, attempts=1):
+    def edit(self, image, instruction, boxes=(), min_change=None, attempts=1, first_attempt=0):
         self.edited.append((Path(image).name, instruction, boxes))
         return None if "nothing" in instruction else self._file(f"edit{len(self.edited)}")
 
@@ -47,7 +47,7 @@ def stub_ai(engine, tmp_path, changes=None, delay=None, visible=("rug", "lamp", 
     """No network: the director answers from `changes` ({command: Verdict}), finds only the `visible` things,
     and pictures are fake files."""
     changes = changes or {}
-    engine.director.describe_place = lambda name, text, known=(), came_from=None: Description(f"picture of {name}", {})
+    engine.director.describe_place = lambda name, text, *context: Description(f"picture of {name}", {})
     engine.director.assess = lambda place, text, command: changes.get(command, NO_CHANGE)
     engine.director.locate = lambda text: None
     engine.director.find = lambda image, thing: Finding([[100, 200, 300, 400]], "wooden floor") if thing in visible else Finding([])
@@ -285,7 +285,7 @@ def test_landmarks_are_described_the_same_way_from_every_side(tmp_path):
     look = "a two-storey white clapboard farmhouse with a grey roof"
     seen = []
 
-    def describe(name, text, known=(), came_from=None):
+    def describe(name, text, known=(), *context):
         seen.append(set(known))
         if name == "West of House":
             return Description("An open field near a white house with a boarded front door.", {"white house": look})
@@ -328,13 +328,44 @@ def test_underground_places_are_painted_underground(tmp_path):
     painter = stub_ai(engine, tmp_path)
     came_from = []
 
-    def describe(name, text, known=(), came_from_place=None):
+    def describe(name, text, known=(), came_from_place=None, command=None):
         came_from.append(came_from_place.name if came_from_place else None)
         return Description(f"The edge of a chasm.", {}, setting="underground")
 
-    engine.director.describe_place = lambda name, text, known=(), came_from=None: describe(name, text, known, came_from)
+    engine.director.describe_place = describe
     feed(engine, [(None, LIVING_ROOM), ("down", DARK), ("turn on lamp", CELLAR),
                   ("south", "East of Chasm\nYou are on the east edge of a chasm, the bottom of which cannot be seen.")])
 
     assert came_from == [None, "Living Room", "Cellar"]  # the dark stretch doesn't lose track of where we were
     assert painter.painted[-1] == "The edge of a chasm. Deep underground, enclosed by rough rock walls and ceiling."
+
+
+def test_a_visitor_already_in_the_picture_needs_no_edit(tmp_path):
+    engine = PipeDream(["zork1.z3"], cache_dir=tmp_path)
+    painter = stub_ai(engine, tmp_path, changes={"(comes back here)": Verdict("add", "lamp", "Add a lamp on the floor.")})
+    shown = []
+    engine.custom_image = shown.append
+
+    feed(engine, [(None, LIVING_ROOM), ("east", "Kitchen\nYou are in the kitchen of the white house."),
+                  ("west", "Living Room\nThere is a brass lamp here.")])
+
+    assert painter.edited == []  # the finder already sees a lamp, so it's in the picture
+    assert Path(shown[-1]).name == "paint1.png"
+
+
+def test_an_edit_that_should_reveal_something_is_retried_until_it_does(tmp_path):
+    engine = PipeDream(["zork1.z3"], cache_dir=tmp_path)
+    painter = stub_ai(engine, tmp_path, changes={
+        "move rug": Verdict("change", "rug", "Replace the rug with a trap door.", "trap door")})
+    looks = []
+
+    def find(image, thing):
+        looks.append((Path(image).name, thing))
+        # The first edit (edit1) shows no trap door; the second one (edit2) does
+        return Finding([[1, 2, 3, 4]], "floor") if thing == "rug" or Path(image).name == "edit2.png" else Finding([])
+
+    engine.director.find = find
+    feed(engine, [(None, LIVING_ROOM), ("move rug", "The rug is moved aside.")])
+
+    assert [e[0] for e in painter.edited] == ["paint1.png", "paint1.png"]
+    assert ("edit1.png", "trap door") in looks and Path(engine.world.current.image).name == "edit2.png"
