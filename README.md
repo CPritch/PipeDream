@@ -99,7 +99,7 @@ pipedream-gui --img2img adventure
 
 ### Cache Management
 
-PipeDream caches aggressively to save money. Cache data is namespaced by your game command and art style. To wipe the world map and start fresh for a specific game:
+PipeDream caches aggressively to save money. Cache data is namespaced by your game command and art style, and lives in your user cache folder (`~/.cache/pipedream` on Linux, `~/Library/Caches/pipedream` on macOS, `%LOCALAPPDATA%\pipedream\Cache` on Windows). To wipe the world map and start fresh for a specific game:
 
 ```bash
 # Note: Ensure the flag comes before the game command
@@ -115,18 +115,19 @@ If you want to play around with the source code:
 1. **Clone the repo:**
 
 ```bash
-git clone [https://github.com/yourusername/pipedream.git](https://github.com/yourusername/pipedream.git)
-cd pipedream
+git clone https://github.com/CPritch/PipeDream.git
+cd PipeDream
 ```
 
-2. **Install in editable mode:**
+2. **Install with [uv](https://docs.astral.sh/uv/):**
 
 ```bash
-pip install -e .
+uv sync
+uv run pytest
 ```
 
 3. **Configure Environment:**
-Create a `.env` file in the root:
+Create a `.env` file in the folder you run PipeDream from (the repo root works):
 
 ```ini
 GEMINI_API_KEY=AIzaSy...
