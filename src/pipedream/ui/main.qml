@@ -45,6 +45,26 @@ ApplicationWindow {
                     running: backend.status_message !== "Ready" && backend.status_message !== "Error"
                     visible: running
                 }
+
+                // For when a picture has come out wrong: paint this place again from scratch
+                Button {
+                    id: repaintButton
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    anchors.margins: 10
+                    text: "Repaint"
+                    font.pixelSize: 12
+                    visible: sceneImage.status === Image.Ready && backend.status_message === "Ready"
+                    opacity: hovered ? 0.9 : 0.45
+                    ToolTip.visible: hovered
+                    ToolTip.text: "Paint this place again (Ctrl+R)"
+                    onClicked: backend.repaint()
+                }
+
+                Shortcut {
+                    sequence: "Ctrl+R"
+                    onActivated: if (repaintButton.visible) backend.repaint()
+                }
             }
 
             // RIGHT: Terminal

@@ -1,0 +1,131 @@
+"""Reading the game's output: reflowing it, finding room titles and darkness, and cleaning up image prompts."""
+import re
+
+# Lowercase words allowed inside a room title, as in "West of House" or "Top of the Well"
+_SMALL_WORDS = {"a", "an", "and", "as", "at", "by", "for", "from", "in", "into", "of", "off", "on", "onto", "or",
+                "over", "the", "to", "under", "with"}
+# One-word replies that look like titles but aren't
+_NOT_TITLES = {"ok", "okay", "done", "taken", "dropped", "yes", "no", "what", "bah", "huh", "darkness"}
+# Commands that never change what the player can see, so the director isn't asked
+_NO_VISIBLE_EFFECT = {"i", "inv", "inventory", "score", "examine", "x", "look", "l", "read", "wait", "z", "save",
+                      "restore", "restart", "undo", "verbose", "brief", "superbrief", "help", "hint", "hints", "about",
+                      "info", "credits", "version", "listen", "smell", "sniff", "think", "diagnose", "jump", "sing",
+                      "shout", "yell", "scream", "hello", "hi", "echo", "sleep", "notify", "script", "unscript"}
+_DIRECTIONS = {"n", "s", "e", "w", "ne", "nw", "se", "sw", "u", "d", "north", "south", "east", "west", "northeast",
+               "northwest", "southeast", "southwest", "up", "down", "in", "out", "enter", "exit", "go"}
+_DARK = re.compile(r"\b(pitch[- ](black|dark)|too dark to see|dark place)\b", re.IGNORECASE)
+
+
+def unwrap(text, width):
+    """Join lines the game broke only because they hit its screen width, so the GUI can wrap them itself.
+
+    A line was wrapped if the next line's first word wouldn't have fitted on it. Blank lines and indented
+    lines (e.g. container contents) always start a new line.
+    """
+    if width < 60:
+        return text
+    lines = text.split("\n")
+    out, previous = [lines[0]], lines[0].rstrip()
+    for line in lines[1:]:
+        first_word = line.split(" ", 1)[0]
+        if previous and line and not line[0].isspace() and len(previous) + 1 + len(first_word) > width:
+            out[-1] = f"{out[-1].rstrip()} {line}"
+        else:
+            out.append(line)
+        previous = line.rstrip()  # the decision depends on the game's line, not on what it's been joined to
+    return "\n".join(out)
+
+
+def is_title(line):
+    """Whether a line looks like a room title, e.g. "West of House" or "The Troll Room"."""
+    line = re.sub(r"\s*\([^)]*\)$", "", line.strip())  # Inform adds the player's position: "Kitchen (on the chair)"
+    if not line or len(line) > 40 or line[-1] in ".!?,;:" or re.search(r"[:/|=*\[\]<>{}\"]", line):
+        return False
+    words = line.split()
+    if not line[0].isupper() or len(words) > 6 or line.lower() in _NOT_TITLES:
+        return False
+    if line.isupper() and len(words) > 2:  # banners like "WELCOME TO ADVENTURE"
+        return False
+    for word in words[1:]:
+        core = word.strip("'-#,")
+        if core and not core[0].isdigit() and core.lower() not in _SMALL_WORDS and not core[0].isupper():
+            return False
+    return True
+
+
+def find_title(text):
+    """The last room title in the text (it follows any messages about the move), or None."""
+    titles = [line.strip() for line in text.splitlines() if is_title(line)]
+    return re.sub(r"\s*\([^)]*\)$", "", titles[-1]) if titles else None
+
+
+def from_title(text, title):
+    """The part of the text from the title on: the place itself, without messages printed before the move."""
+    lines = text.splitlines()
+    for i in range(len(lines) - 1, -1, -1):
+        if is_title(lines[i]) and lines[i].strip().startswith(title):
+            return "\n".join(lines[i:]).strip()
+    return text.strip()
+
+
+def has_no_visible_effect(command, titled):
+    """Commands whose reply can't change the scene. In games with room titles, a move that printed no title failed."""
+    words = (command or "").strip().lower().split()
+    if not words:
+        return False
+    return words[0] in _NO_VISIBLE_EFFECT or (titled and (len(words) == 1 or words[0] == "go") and words[0] in _DIRECTIONS)
+
+
+def is_dark(text, title=None):
+    """Whether the player can't see. Inform games title a dark room "Darkness"."""
+    return (title is None or title.lower() == "darkness") and bool(_DARK.search(text))
+
+
+def without_possessions(text):
+    """Drop sentences about the player's own things ("Your sword is glowing"); they aren't part of the scene."""
+    return re.sub(r"(^|(?<=[.!?]\s))Your [^.!?]*[.!?]\s*", "", text, flags=re.MULTILINE).strip()
+
+
+_DIRECTION = r"(?:(?:north|south)(?:-?(?:east|west))?|east|west)"
+_COMPASS = re.compile(rf"(?:\b(?:to|toward|towards|from|on|at)\s+the\s+)?\b{_DIRECTION}(?:ern|ward|wards)?\b,?",
+                      re.IGNORECASE)
+_NEGATION = re.compile(r"\b(no|not|none|nothing|without|never|nor|cannot|can't|isn't|aren't|doesn't|don't|nowhere)\b",
+                       re.IGNORECASE)
+# "with no door", "without windows", "no visible openings or entrances"
+_NEGATED_PHRASE = re.compile(r",?\s*\b(?:with|and|but|having)?\s*\b(?:no|without)\s+(?:[\w-]+\s+){0,2}?[\w-]+"
+                             r"(?:\s+(?:or|and)\s+[\w-]+)?(?=\s*[,.;!?]|$)", re.IGNORECASE)
+# Exit listings: "Exits: north", "Up: dark staircase", "A path leads to the forest"
+_EXITS = re.compile(rf"\b(exits?|leads? to|paths? to)\b|\b({_DIRECTION}|up|down|in|out)\s*:", re.IGNORECASE)
+# What's left of "A doorway is to the east" once the direction has gone
+_DANGLING = re.compile(r"\b(is|are|was|were|lies|lie|leads?|goes|go|runs|opens|stands|sits|winds|continues|extends|heads|"
+                       r"facing|faces|toward|towards|beyond|into|onto|to|from|of|with|at|near)[.!?]?$", re.IGNORECASE)
+
+
+def clean_prompt(prompt):
+    """Remove what image models get wrong: they paint direction words as text and draw whatever is negated."""
+    kept = []
+    prompt = re.sub(r"^[\w' -]{1,40}:\s*", "", prompt.replace('"', "").strip())  # a "Behind House:" label gets painted
+    for sentence in re.split(r"(?<=[.!?])\s+", prompt):
+        if not sentence or _EXITS.search(sentence) or re.match(r"(no|nothing|none|there (is|are) no)\b", sentence, re.I):
+            continue
+        sentence = _NEGATED_PHRASE.sub("", sentence)
+        if _NEGATION.search(sentence):
+            continue
+        sentence = re.sub(rf"\b{_DIRECTION}\s+of\b", "near", sentence, flags=re.IGNORECASE)  # "field west of a house"
+        sentence = _tidy(_COMPASS.sub("", sentence))
+        if _DANGLING.search(sentence) and "," in sentence:
+            sentence = sentence[:sentence.rindex(",")] + "."  # "boarded windows, facing." loses only its last clause
+        if len(sentence.split()) >= 2 and not _DANGLING.search(sentence):
+            kept.append(sentence)
+    return re.sub(r"(^|[.!?]\s+)([a-z])", lambda m: m[1] + m[2].upper(), " ".join(kept))
+
+
+def _tidy(sentence):
+    """Clean up after removed words: "with east and south passages", "an east-west corridor", "To the south, a"."""
+    sentence = re.sub(r"(^|\s)-(?=\s)", r"\1", sentence)
+    sentence = re.sub(r"\b(with|and|or)\s+(?:and|or)\b", r"\1", sentence)
+    sentence = re.sub(r"\s+(?:and|or)(?=\s*[.,;!?])", "", sentence)
+    sentence = re.sub(r"\s+([.,;!?])", r"\1", re.sub(r"\s{2,}", " ", sentence)).strip()
+    sentence = re.sub(r"^[,;]\s*", "", sentence)
+    sentence = re.sub(r"[,;]\s*([.!?])$", r"\1", sentence)
+    return sentence if not sentence or sentence[-1] in ".!?" else sentence + "."

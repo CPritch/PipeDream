@@ -70,6 +70,7 @@ class ImageProfile(NamedTuple):
     sampling: dict  # sd-server sample_params
     quantize: str = ""  # quantize the downloaded diffusion weights to this ggml type on first install
     devices: tuple = ()  # ggml device prefixes the model is known to render correctly on; empty means any
+    edits: bool = True  # whether the model can edit a picture it's given, for changes within a place
 
 
 FOUR_STEP = {"sample_method": "euler", "sample_steps": 4, "guidance": {"txt_cfg": 1.0}}
@@ -83,12 +84,13 @@ QWEN_TURBO = {"sample_method": "euler", "sample_steps": 6, "custom_sigmas": [1.0
 # language model to download. Otherwise a profile names its own "director".
 # Timings are for a 768x576 scene on an RTX 5060 Laptop GPU.
 PROFILES = {
-    # Microsoft Mage-Flow Turbo (MIT), ~1.8 s. The published int8 weights only run on CUDA, so the bf16 weights are
-    # quantized to q8_0 locally. Even then sd.cpp's Vulkan backend renders Mage-Flow as noise (as of master-945,
-    # on NVIDIA and AMD alike), so it's CUDA-only for now.
+    # Microsoft Mage-Flow Edit Turbo (MIT): ~1.8 s for a new scene, ~4 s for an edit. The edit model paints from text
+    # as well as the plain Turbo model does, so one model covers both. The published int8 weights only run on CUDA,
+    # so the bf16 weights are quantized to q8_0 locally. Even then sd.cpp's Vulkan backend renders Mage-Flow as
+    # noise (as of master-945, on NVIDIA and AMD alike), so it's CUDA-only for now.
     "mage-flow": ImageProfile({
-        "diffusion": _hf("Comfy-Org/Mage-Flow", "diffusion_models/mage_flow_turbo_bf16.safetensors",
-                         8231536760, "6df47df3d7efc9ebdad075b87b3e9e4f74d09dca672d592271788f0ee27ab97d"),
+        "diffusion": _hf("Comfy-Org/Mage-Flow", "diffusion_models/mage_flow_edit_turbo_bf16.safetensors",
+                         8231536760, "29c3726ecd64afe149eef28af3e27b6b40de52646bfd16757a37da4b6fbcf288"),
         "vae": _hf("Comfy-Org/Mage-Flow", "vae/mage_flow_vae_bf16.safetensors",
                    345053056, "34e076dc1e8a15321e1e07be5111d59cf16dd10b804b7c7e20b4de29013427e0"),
         "llm": _hf("Qwen/Qwen3-VL-4B-Instruct-GGUF", "Qwen3VL-4B-Instruct-Q4_K_M.gguf",
@@ -104,7 +106,7 @@ PROFILES = {
                    5027784800, "67d1659bfe71b89d50b45a4ad1a9e5b997e5bb16ce5da66a6a6167abd569e9e2"),
         "vision": _hf("Qwen/Qwen3-VL-8B-Instruct-GGUF", "mmproj-Qwen3VL-8B-Instruct-F16.gguf",
                       1159029824, "ca524100ebf825c9a870db1c580d03879e0da0ab2541697e2458e64891cf9d38"),
-    }, QWEN_TURBO),
+    }, QWEN_TURBO, edits=False),
     # FLUX.2 klein 4B (Apache 2.0) with BFL's small decoder, ~4.4 s
     "flux2-klein": ImageProfile({
         "diffusion": _hf("leejet/FLUX.2-klein-4B-GGUF", "flux-2-klein-4b-Q4_0.gguf",

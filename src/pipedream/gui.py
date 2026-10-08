@@ -17,13 +17,12 @@ class GameWorker(QObject):
     status_updated = Signal(str)
     model_chosen = Signal(str)
 
-    def __init__(self, command, style=None, clear_cache=False, img2img=False, llm_url=None, image_url=None,
+    def __init__(self, command, style=None, clear_cache=False, llm_url=None, image_url=None,
                  image_model=DEFAULT_PROFILE, size=(768, 576)):
         super().__init__()
         self.command = command
         self.style = style
         self.clear_cache = clear_cache
-        self.img2img = img2img
         self.size = size
         self.backends = LocalBackends(llm_url, image_url, image_model)
         self.input_queue = queue.Queue()
@@ -54,7 +53,6 @@ class GameWorker(QObject):
             self.command, 
             style=self.style, 
             clear_cache=self.clear_cache,
-            img2img=self.img2img,
             llm_url=self.backends.llm_url,
             image_url=self.backends.image_url,
             image_model=self.backends.profile,
@@ -88,13 +86,17 @@ class GameWorker(QObject):
     def send_command(self, cmd):
         self.input_queue.put(cmd)
 
+    def repaint(self):
+        if self.engine:
+            self.engine.repaint()
+
 class Backend(QObject):
     textChanged = Signal()
     imageChanged = Signal()
     statusChanged = Signal()
     modelChanged = Signal()
 
-    def __init__(self, command, style=None, clear_cache=False, img2img=False, llm_url=None, image_url=None,
+    def __init__(self, command, style=None, clear_cache=False, llm_url=None, image_url=None,
                  image_model=DEFAULT_PROFILE, size=(768, 576)):
         super().__init__()
         self._text = ""
@@ -102,7 +104,7 @@ class Backend(QObject):
         self._status = "Initializing..."
         self._image_model = image_model
         
-        self.worker = GameWorker(command, style, clear_cache, img2img, llm_url, image_url, image_model, size)
+        self.worker = GameWorker(command, style, clear_cache, llm_url, image_url, image_model, size)
         self.worker.text_received.connect(self.append_text)
         self.worker.image_received.connect(self.update_image)
         self.worker.status_updated.connect(self.update_status)
@@ -127,6 +129,10 @@ class Backend(QObject):
     def send_command(self, cmd):
         self.append_text(f"> {cmd}\n")
         self.worker.send_command(cmd)
+
+    @Slot()
+    def repaint(self):
+        self.worker.repaint()
 
     def append_text(self, new_text):
         self._text += new_text + "\n"
@@ -161,7 +167,7 @@ def main():
     app = QGuiApplication(sys.argv)
     engine = QQmlApplicationEngine()
 
-    backend = Backend(game_cmd, style=args.style, clear_cache=args.clear_cache, img2img=args.img2img,
+    backend = Backend(game_cmd, style=args.style, clear_cache=args.clear_cache,
                       llm_url=args.llm_url, image_url=args.image_url, image_model=args.image_model, size=args.size)
     engine.rootContext().setContextProperty("backend", backend)
 

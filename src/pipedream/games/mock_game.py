@@ -3,18 +3,25 @@ import time
 
 LOCATIONS = {
     "start": {
+        "title": "Open Field",
         "desc": "You are standing in an open field west of a white house. A dark forest looms to the north.",
         "exits": {"north": "forest", "enter": "house", "in": "house", "east": "house"}
     },
     "forest": {
+        "title": "Dark Forest",
         "desc": "You are deep in a dark, ancient forest. Twisted trees block out the sky.",
         "exits": {"south": "start"}
     },
     "house": {
+        "title": "Inside the House",
         "desc": "You are inside the white house. It is dusty, with a single lantern glowing on a table.",
         "exits": {"out": "start", "exit": "start", "west": "start"}
     }
 }
+
+def describe(room):
+    # Like most text adventures, each description starts with the room's title on a line of its own
+    print(f"{LOCATIONS[room]['title']}\n{LOCATIONS[room]['desc']}")
 
 def main():
     current_room = "start"
@@ -25,7 +32,7 @@ def main():
     print(" Commands: north, south, enter, exit, quit")
     print("="*50 + "\n")
     
-    print(LOCATIONS[current_room]["desc"])
+    describe(current_room)
 
     while True:
         try:
@@ -36,7 +43,7 @@ def main():
                 break
             
             if command in ["look", "l"]:
-                print(LOCATIONS[current_room]["desc"])
+                describe(current_room)
                 continue
 
             # Movement Logic
@@ -44,7 +51,7 @@ def main():
             if command in room_data["exits"]:
                 new_room = room_data["exits"][command]
                 current_room = new_room
-                print(LOCATIONS[current_room]["desc"])
+                describe(current_room)
             else:
                 print(f"You can't go '{command}' from here.")
                 

@@ -1,70 +1,110 @@
 import json
+import re
 import requests
 
-# llama-server constrains the reply to this schema, so there's no free text to parse. There's deliberately no
-# "meta" category: small models file a title banner followed by a room description under it, so out-of-game
-# text is signalled by location "none" instead, which they get right.
-SCENE_SCHEMA = {
+from pipedream.gametext import clean_prompt
+
+# llama-server constrains each reply to a JSON schema, so there's no free text to parse. Each question is kept
+# narrow because a 4B model answers one clear question far more reliably than a combined one.
+PLACE_SCHEMA = {"type": "object", "properties": {"prompt": {"type": "string"}}, "required": ["prompt"]}
+CHANGE_SCHEMA = {
     "type": "object",
-    "properties": {
-        "location": {"type": "string"},
-        "category": {"type": "string", "enum": ["action_failed", "no_change", "scene_changed"]},
-        "prompt": {"type": "string"},
-    },
-    "required": ["location", "category", "prompt"],
+    "properties": {"kind": {"type": "string", "enum": ["none", "change", "dark"]}, "edit": {"type": "string"}},
+    "required": ["kind", "edit"],
 }
+LOCATION_SCHEMA = {"type": "object", "properties": {"location": {"type": "string"}}, "required": ["location"]}
+
+# Image models paint direction words as text and draw anything negated, so prompts never contain either
+_PICTURE_RULES = (
+    "Never mention directions (north, south, east, west), exits or where paths lead. "
+    "Never mention words, signs, labels or writing. "
+    "Never say what is absent, hidden or not visible, and never use the words no, not or without: describe only "
+    "what is there. "
+    "The viewer is the player: never include the player, 'you', or anything the player is carrying."
+)
+
+DESCRIBE_PLACE = (
+    "You turn a text adventure's description of a place into a prompt for an image model.\n"
+    "Write under 50 words of plain visual description: the setting, its architecture and lighting, the notable "
+    "objects in it, and any creatures or people the text says are here. Include only what the text says is here; "
+    "don't invent objects, doors or details. "
+    f"{_PICTURE_RULES}\n"
+    "Example: 'A cramped kitchen with a worn wooden table holding a glass bottle of water and a brown sack. "
+    "A dark staircase climbs into shadow beside a small open window.'"
+)
+
+ASSESS_CHANGE = (
+    "You are the visual director for a text adventure. The player is in a place that has already been painted. "
+    "Decide whether the game's latest reply visibly changes that picture.\n"
+    "kind:\n"
+    "- none: nothing in the picture changes. This includes failed actions, inventory, score, sounds, smells, "
+    "conversation, picking up or dropping small items, and anything about the player's own possessions. "
+    "For example 'Taken.', 'Dropped.', 'You are carrying a lamp.', 'The troll fends you off.', 'Nothing happens.'\n"
+    "- change: the scene visibly changes. A door, window, hatch or container opens or closes; something is moved "
+    "aside, revealed, broken, lit or put out; a creature or person arrives, leaves, is knocked out or killed.\n"
+    "- dark: the player can no longer see anything.\n"
+    "edit: empty unless kind is change. Otherwise one short sentence describing how that part of the scene looks "
+    "now, e.g. 'The trap door in the floor stands open, revealing a rickety staircase.' or 'The troll is gone; "
+    f"wisps of black fog hang where it stood.' {_PICTURE_RULES}"
+)
+
+LOCATE = (
+    "You read a text adventure's latest reply. If it describes the place the player is in, answer with a short "
+    "canonical name for that place (at most 4 words). Otherwise answer 'none'. Titles, banners, credits, "
+    "instructions, questions and the results of actions are not places."
+)
+
 
 class Director:
-    def __init__(self, engine, llm_url, style_prompt=None, img2img=False):
-        self.engine = engine
+    def __init__(self, llm_url):
         self.llm_url = llm_url
-        self.style = style_prompt or "Oil painting, dark fantasy, atmospheric"
-        self.img2img = img2img
 
-    def describe_scene(self, raw_text, previous_text=""):
-        if self.img2img:
-            spatial_rule = "Describe the new scene as a visual progression from the previous one, keeping the environment consistent."
-        else:
-            spatial_rule = "Describe the scene from scratch."
+    def describe_place(self, name, text):
+        """A prompt for painting a place the player has just found, or None."""
+        reply = self._ask(DESCRIBE_PLACE, f"PLACE: {name}\n\n{text}", PLACE_SCHEMA)
+        prompt = clean_prompt(reply.get("prompt", "")) if reply else ""
+        return prompt if len(prompt) >= 5 else None
 
-        system_prompt = (
-            "You are the visual director for a text adventure game. "
-            "Compare the CURRENT TEXT with the PREVIOUS TEXT and classify the outcome.\n\n"
-            "location: a short canonical name (at most 4 words) for the place the CURRENT TEXT describes, or 'none' if it describes no place.\n\n"
-            "Titles, banners, credits, instructions and questions like 'Would you like instructions?' are not places.\n\n"
-            "CATEGORIES:\n"
-            "- action_failed: the player tried to move or act but was blocked.\n"
-            "- no_change: inventory checks, system messages, or a functionally identical room description.\n"
-            "- scene_changed: the player entered a new area, or the room's visual state changed.\n\n"
-            "prompt: empty unless scene_changed. Otherwise under 40 words describing only the environment as the player sees it: "
-            "no people and no 'you'. Include visible exits and paths with their compass directions. "
-            f"{spatial_rule}"
-        )
-        user_content = f"PREVIOUS TEXT: {previous_text or '(none, the game has just started)'}\n\nCURRENT TEXT: {raw_text}"
+    def assess(self, place, text, command):
+        """What the reply does to the current place's picture: ("none" | "change" | "dark", edit instruction)."""
+        painted = " ".join([place.prompt, *place.edits])
+        reply = self._ask(ASSESS_CHANGE, f"PLACE: {place.name}\nTHE PICTURE SHOWS: {painted}\n\n"
+                                         f"PLAYER: {command}\nGAME: {text}", CHANGE_SCHEMA)
+        if not reply:
+            return "none", ""
+        kind = reply.get("kind", "none")
+        edit = clean_prompt(reply.get("edit", "")) if kind == "change" else ""
+        if kind not in ("change", "dark") or (kind == "change" and len(edit) < 5):
+            return "none", ""
+        return kind, edit
 
+    def locate(self, text):
+        """For games without room titles: the name of the place the text describes, or None."""
+        reply = self._ask(LOCATE, text, LOCATION_SCHEMA, max_tokens=24)
+        location = (reply or {}).get("location", "").strip().strip(".")
+        return location if location and location.lower() != "none" else None
+
+    def _ask(self, system, user, schema, max_tokens=200):
         try:
             response = requests.post(f"{self.llm_url}/v1/chat/completions", timeout=120, json={
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content},
-                ],
+                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
                 "temperature": 0.2,
-                "max_tokens": 160,
+                "max_tokens": max_tokens,
                 # Hybrid reasoning models (e.g. Qwen3-4B) otherwise think first and leave the JSON reply empty
                 "chat_template_kwargs": {"enable_thinking": False},
-                "response_format": {"type": "json_schema", "json_schema": {"name": "scene", "schema": SCENE_SCHEMA}},
+                "response_format": {"type": "json_schema", "json_schema": {"name": "reply", "schema": schema}},
             })
             response.raise_for_status()
-            scene = json.loads(response.json()["choices"][0]["message"]["content"])
+            content = response.json()["choices"][0]["message"]["content"]
         except (requests.RequestException, KeyError, ValueError) as e:
             print(f"[!] Director Error: {e}")
             return None
-
-        is_place = scene["location"].strip().lower() not in ("", "none")
-        # The first place the game describes is always new, whatever the model makes of "changed"
-        is_new = scene["category"] == "scene_changed" or not previous_text
-        if not (is_place and is_new) or len(scene["prompt"].strip()) < 5:
+        try:
+            return json.loads(content)
+        except ValueError as e:
+            # A rambling reply can hit max_tokens mid-string; keep its complete sentences rather than nothing
+            match = re.fullmatch(r'\s*\{\s*"(\w+)"\s*:\s*"(.*?[.!?])[^.!?]*', content, re.DOTALL)
+            if match and len(schema["required"]) == 1:
+                return {match[1]: match[2]}
+            print(f"[!] Director Error: {e}")
             return None
-
-        # Style first: the image model weights the start of the prompt most
-        return f"{self.style}. {scene['prompt'].strip()}"
