@@ -20,6 +20,8 @@ from pipedream.world import DEFAULT_CACHE_DIR, World
 if sys.platform == 'win32':
     from pexpect.popen_spawn import PopenSpawn
 
+_UNDERGROUND = re.compile(r"\b(underground|cave|cavern|tunnel|cellar|mine|subterranean|grotto|crypt|dungeon)", re.I)
+
 def session_name(argv, style):
     """A folder name for one game and art style: readable, and short enough for Windows paths."""
     game = re.sub(r"[^a-zA-Z0-9]+", "-", os.path.basename(argv[-1]) if argv else "game").strip("-")[:40]
@@ -57,6 +59,7 @@ class PipeDream:
         self.scenes = queue.Queue()
         self.latest_scene = 0
         self.finder = ThreadPoolExecutor(1, thread_name_prefix="finder")  # looks for things while the director thinks
+        self.last_place = None
         self.scene_thread = threading.Thread(target=self._scene_loop, daemon=True)
 
     def safe_print(self, text):
@@ -191,7 +194,9 @@ class PipeDream:
             return self._change(scene_id, world.current, text, command)
 
         previous = world.current
-        place, is_new = world.arrive(name, text, command)
+        came_from = previous or self.last_place  # after a dark stretch, the last place the player could see
+        place, is_new = world.arrive(name, from_title(text, title) if title else text, command)
+        self.last_place = place
         if place is previous and place.image:
             # Re-described without moving ("look"): anything before the title is the result of the action
             before = text[:text.rfind(title)].strip() if title else ""
@@ -202,17 +207,21 @@ class PipeDream:
             if scene_id != self.latest_scene:
                 return  # the player has already moved on; paint it if they come back
             scene = without_possessions(from_title(text, title) if title else text)
-            described = self.director.describe_place(place.name, scene, set(world.landmarks))
+            described = self.director.describe_place(place.name, scene, set(world.landmarks), came_from)
             if not described:
                 print("   > No visual changes.")
                 return self.report_status("Ready")
             for landmark, look in described.landmarks.items():
                 print(f"   > Landmark: {landmark} is {look}")
             world.landmarks.update(described.landmarks)
-            prompt = apply_landmarks(described.prompt, world.landmarks) if described.outdoors else described.prompt
+            prompt = described.prompt
+            if described.setting == "outdoors":
+                prompt = apply_landmarks(prompt, world.landmarks)
+            elif described.setting == "underground" and not _UNDERGROUND.search(prompt):
+                prompt += " Deep underground, enclosed by rough rock walls and ceiling."  # else it gets a sky
             print(f"   > Prompt: {prompt}")
             self.report_status("Generating Image...")
-            place.prompt, place.edits = prompt, []
+            place.prompt, place.edits, place.setting = prompt, [], described.setting
             place.base = place.image = self.painter.paint(prompt)
             place.visitors = {}
             world.save()
@@ -223,6 +232,7 @@ class PipeDream:
     def _visitors(self, scene_id, place, news):
         """Back at a known place, the game mentions something new ("There is a bloody axe here"): show it."""
         if news not in place.visitors or not os.path.exists(place.visitors[news]):
+            self._show(scene_id, place.image, ready=False)  # the place itself straight away, then what's new
             verdict = self.director.assess(place, news, "(comes back here)")
             image = None
             if verdict.kind in ("change", "add", "remove") and self.painter.edits:
@@ -295,12 +305,13 @@ class PipeDream:
         self.world.save()
         self._show(self.latest_scene, image)
 
-    def _show(self, scene_id, path):
+    def _show(self, scene_id, path, ready=True):
         # A newer scene arrived while this one was being worked on, so this picture is already out of date
         if scene_id == self.latest_scene:
             print(f"   > Image ready.")
             self.custom_image(path)
-            self.report_status("Ready")
+            if ready:
+                self.report_status("Ready")
 
 def parse_size(value):
     match = re.fullmatch(r'(\d+)x(\d+)', value)

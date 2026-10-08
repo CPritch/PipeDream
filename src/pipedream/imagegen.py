@@ -79,8 +79,7 @@ class Painter:
         for attempt in range(attempts):
             seed = self.seed + attempt if self.seed >= 0 else -1
             png = self.generator.generate(prompt, [image], seed=seed, init_image=image if mask else None, mask=mask)
-            if mask:
-                png = paste(image, png, boxes)
+            png = paste(image, png, boxes) if mask else paste_changes(image, png)
             if changed(image, png, boxes) >= min_change:
                 return self._save(png)
         return None
@@ -150,6 +149,42 @@ def paste(original_path, edited_png, boxes):
     feathered = mask.scaled(max(1, w // 12), max(1, h // 12), Qt.IgnoreAspectRatio, Qt.SmoothTransformation).scaled(
         w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
     edited.setAlphaChannel(feathered)
+    painter = QPainter(original)
+    painter.drawImage(0, 0, edited)
+    painter.end()
+    buffer = QBuffer()
+    buffer.open(QBuffer.WriteOnly)
+    original.convertToFormat(QImage.Format_RGB32).save(buffer, "PNG")
+    return bytes(buffer.data())
+
+
+def paste_changes(original_path, edited_png, threshold=35):
+    """The original picture with only what an unconfined edit really changed (a thief it added), not the slight
+    redrawing the model does everywhere else."""
+    from PySide6.QtCore import QBuffer, Qt
+    from PySide6.QtGui import QImage, QPainter
+
+    original = QImage(original_path).convertToFormat(QImage.Format_ARGB32)
+    edited = QImage.fromData(edited_png).convertToFormat(QImage.Format_ARGB32)
+    if original.isNull() or edited.size() != original.size():
+        return edited_png
+    gw, gh = 96, 72  # compare coarse cells, so noise and texture don't count, only real changes
+
+    def cells(image):
+        small = image.convertToFormat(QImage.Format_Grayscale8).scaled(gw, gh, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+        return [small.pixelColor(x, y).value() for y in range(gh) for x in range(gw)]
+
+    hot = [abs(a - b) > threshold for a, b in zip(cells(original), cells(edited))]
+    # Grow each changed cell by two in every direction, so the whole new object comes across, edges included
+    grown = bytearray(gw * gh)
+    for i, on in enumerate(hot):
+        if on:
+            x, y = i % gw, i // gw
+            for yy in range(max(0, y - 2), min(gh, y + 3)):
+                grown[yy * gw + max(0, x - 2):yy * gw + min(gw, x + 3)] = b"\xff" * (min(gw, x + 3) - max(0, x - 2))
+    mask = QImage(bytes(grown), gw, gh, gw, QImage.Format_Grayscale8).scaled(
+        original.width(), original.height(), Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+    edited.setAlphaChannel(mask)
     painter = QPainter(original)
     painter.drawImage(0, 0, edited)
     painter.end()

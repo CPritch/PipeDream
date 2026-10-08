@@ -27,6 +27,7 @@ class Place:
     name: str
     text: str  # everything the game has said while describing it
     prompt: str = ""  # what the base picture was painted from
+    setting: str = "outdoors"  # outdoors, indoors or underground
     base: str = ""  # picture of the place as first described
     image: str = ""  # current picture: the base with any edits applied
     edits: list = field(default_factory=list)  # {"edit": instruction, "target": thing} applied to the base, in order

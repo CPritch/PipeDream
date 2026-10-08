@@ -100,7 +100,7 @@ def without_possessions(text):
 
 _DIRECTION = r"(?:(?:north|south)(?:-?(?:east|west))?|east|west)"
 # "to the north" goes entirely, but in "at the north end" only the direction does
-_COMPASS = re.compile(rf"(?:\b(?:to|toward|towards|from|on|at)\s+the\s+(?={_DIRECTION}(?:ern|ward|wards)?\b(?!\s+[a-z]{{3,}}\b(?<!\band)(?<!\bor))))?"
+_COMPASS = re.compile(rf"(?:\b(?:to|toward|towards|from|on|at)\s+(?:the\s+)?(?={_DIRECTION}(?:ern|ward|wards)?\b(?!\s+[a-z]{{3,}}\b(?<!\band)(?<!\bor))))?"
                       rf"\b{_DIRECTION}(?:ern|ward|wards)?\b", re.IGNORECASE)
 _NEGATION = re.compile(r"\b(no|not|none|nothing|without|never|nor|cannot|can't|isn't|aren't|doesn't|don't|nowhere)\b",
                        re.IGNORECASE)
@@ -129,6 +129,9 @@ def clean_prompt(prompt):
         if _NEGATION.search(sentence):
             continue
         sentence = re.sub(rf"\b{_DIRECTION}\s+of\b", "near", sentence, flags=re.IGNORECASE)  # "field west of a house"
+        # Painters draw "a boarded door" as a plank door; spell out what boarding looks like
+        sentence = re.sub(r"\bboarded(?:[- ]up)?\s+((?:[\w-]+\s+)?(?:door|doors|window|windows))\b",
+                          r"\1 with wooden planks nailed across", sentence, flags=re.IGNORECASE)
         sentence = re.sub(rf"\b(?:from\s+)?(?:the\s+)?{_DIRECTION}\s+to\s+(?:the\s+)?{_DIRECTION}\b", "", sentence,
                           flags=re.IGNORECASE)  # "running from east to west"
         sentence = _tidy(_COMPASS.sub("", sentence))

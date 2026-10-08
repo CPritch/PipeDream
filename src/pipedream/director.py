@@ -9,15 +9,17 @@ from pipedream.gametext import clean_prompt, command_object
 
 # llama-server constrains each reply to a JSON schema, so there's no free text to parse. Each question is kept
 # narrow because a 4B model answers one clear question far more reliably than a combined one.
+_PROMPT_LIMIT = 400
 PLACE_SCHEMA = {
     "type": "object",
-    # Deciding outdoors first, before writing the prompt, stops "Outdoors: true." leaking into the prompt itself
+    # Deciding the setting first, before writing the prompt, stops "Outdoors: true." leaking into the prompt itself
     "properties": {
-        "outdoors": {"type": "boolean"},
-        "prompt": {"type": "string"},
+        "setting": {"type": "string", "enum": ["outdoors", "indoors", "underground"]},
+        # The grammar closes the string at this length, so a looping reply can't run on to max_tokens
+        "prompt": {"type": "string", "maxLength": _PROMPT_LIMIT},
         "landmarks": {"type": "array", "maxItems": 2, "items": {"type": "string"}},
     },
-    "required": ["outdoors", "prompt", "landmarks"],
+    "required": ["setting", "prompt", "landmarks"],
 }
 CHANGE_SCHEMA = {
     "type": "object",
@@ -45,7 +47,8 @@ DESCRIBE_PLACE = (
     f"{_PICTURE_RULES}\n"
     "Example: 'A cramped kitchen with a worn wooden table holding a glass bottle of water and a brown sack. "
     "A dark staircase climbs into shadow beside a small open window.'\n"
-    "outdoors: true if the place is out in the open air, false if it's inside a building, a cave or underground.\n"
+    "setting: outdoors (open air), indoors (inside a building) or underground (caves, cellars, tunnels, mines). "
+    "Places reached from underground stay underground unless the text says otherwise.\n"
     "landmarks: up to two large, lasting features of this place that could also be seen from neighbouring places, "
     "such as a building, tower, bridge, river or cliff (never small objects, doors, windows or paths), each by what "
     "the game calls it, e.g. 'white house'. An empty list if there are none."
@@ -54,11 +57,11 @@ DESCRIBE_PLACE = (
 DESIGN_LANDMARK = (
     "You design the look of a recurring landmark in an illustrated text adventure, so every picture of it matches. "
     "Given its name and what the game says, describe exactly how it looks from any side in one phrase under 30 "
-    "words: its shape, size, storeys, building materials, colours, roof and chimney. Be specific and concrete; invent "
-    "details the game leaves open. Never mention doors, windows, signs or anything seen from only one side. Start "
-    "with 'a' or 'an'."
+    "words: its shape, size, materials and colours, and for a building its storeys, roof and chimney. Be specific "
+    "and concrete; invent details the game leaves open, but nothing that isn't part of the landmark itself. Never "
+    "mention doors, windows, signs or anything seen from only one side. Start with 'a' or 'an'."
 )
-LOOK_SCHEMA = {"type": "object", "properties": {"look": {"type": "string"}}, "required": ["look"]}
+LOOK_SCHEMA = {"type": "object", "properties": {"look": {"type": "string", "maxLength": 240}}, "required": ["look"]}
 
 ASSESS_CHANGE = (
     "You are the visual director for a text adventure. The player is in a place that has already been painted. "
@@ -78,9 +81,10 @@ ASSESS_CHANGE = (
     "for it (e.g. 'brass lantern', 'troll', 'trap door', 'trophy case'). Empty if kind is none, add or dark.\n"
     "edit: an instruction for an image editor about only this latest change, starting with a verb and naming the "
     "thing the player acted on, e.g. 'Remove the brass lantern.', 'Open the trap door, revealing a rickety staircase "
-    "descending into darkness.', 'Remove the troll, leaving wisps of black fog where it stood.', 'Make the troll lie "
-    "unconscious on the floor.', 'Place a framed painting inside the trophy case.' Empty if kind is none or "
-    f"dark. {_PICTURE_RULES}"
+    "descending into darkness.', 'Drag the rug into a heap at the side, revealing a closed wooden trap door in the "
+    "floor.', 'Make the troll lie unconscious on the floor.', 'Add a lean man in a dark cloak with a large sack, "
+    "leaning against the wall.' Only things that can be seen: never air, sounds, smells or feelings. Empty if kind "
+    f"is none or dark. {_PICTURE_RULES}"
 )
 
 FIND = ('Locate the {thing} in the image. Answer in JSON: {{"bbox_2d": [x1, y1, x2, y2], "surface": "the surface it '
@@ -94,10 +98,14 @@ LOCATE = (
 )
 
 
+_OPEN_AIR = re.compile(r"\b(sky|sun|sunlight|daylight|moon|stars|outside|open air|fresh air|clearing|forest|field)\b",
+                       re.IGNORECASE)
+
+
 class Description(NamedTuple):
     prompt: str
     landmarks: dict  # landmarks seen here for the first time: name -> look
-    outdoors: bool = True
+    setting: str = "outdoors"  # outdoors, indoors or underground
 
 
 class Finding(NamedTuple):
@@ -122,9 +130,11 @@ def obvious_verdict(command, reply):
         return None
     if words[0] in ("take", "get", "grab", "pick") and reply == "taken.":
         return Verdict("remove", thing, f"Remove the {thing}.")
-    if words[0] == "open" and reply == "opened.":
-        return Verdict("change", thing, f"Open the {thing}.")
-    if words[0] == "close" and reply == "closed.":
+    refused = re.search(r"\b(already|locked|can't|cannot|won't|isn't|not|no)\b", reply)
+    if words[0] == "open" and not refused and (reply == "opened." or re.search(r"\bopens?\b|\bopened\b", reply)):
+        revealed = re.search(r"\breveal(?:s|ing)?\s+(.+?)[.!]", reply)  # "opens to reveal a rickety staircase"
+        return Verdict("change", thing, f"Open the {thing}" + (f", revealing {revealed[1]}." if revealed else "."))
+    if words[0] == "close" and not refused and (reply == "closed." or re.search(r"\bcloses?\b|\bclosed\b|\bshut\b", reply)):
         return Verdict("change", thing, f"Close the {thing}.")
     if words[0] in ("put", "place") and reply == "done.":
         item = re.sub(r"^(the|a|an)\s+", "", re.split(r"\s+(?:in|into|on|onto|inside|under)\s+", " ".join(words[1:]))[0])
@@ -136,31 +146,47 @@ class Director:
     def __init__(self, llm_url):
         self.llm_url = llm_url
 
-    def describe_place(self, name, text, known=()):
+    def describe_place(self, name, text, known=(), came_from=None):
         """A Description for painting a place the player has just found, or None.
 
         `known` names the landmarks already designed. They aren't shown to the model: told about a house, a small
-        model paints it into every room, kitchen included.
+        model paints it into every room, kitchen included. `came_from` is the previous Place, if any, so a chasm
+        reached from a cellar is known to be underground.
         """
         user = f"PLACE: {name}\n\n{text}"
+        if came_from:
+            user = f"THE PLAYER CAME FROM: {came_from.name} ({came_from.setting})\n\n" + user
         for temperature in (0.2, 0.7):
             reply = self._ask(DESCRIBE_PLACE, user, PLACE_SCHEMA, max_tokens=240, temperature=temperature) or {}
-            prompt = clean_prompt(reply.get("prompt", ""))
+            raw = reply.get("prompt", "")
+            if len(raw) >= _PROMPT_LIMIT - 10 and "." in raw:
+                raw = raw[:raw.rfind(".") + 1]  # cut off at the length limit: drop the unfinished sentence
+            prompt = clean_prompt(raw)
             # Too little survives when the model describes mostly what isn't there; a warmer second try differs
             if len(prompt) >= 20:
                 break
             print(f"   > Description of {name} cleaned down to {prompt!r}, asking again")
         if len(prompt) < 5:
-            return None
-        found, outdoors = {}, reply.get("outdoors") is not False
+            # Better the game's own words than no picture at all
+            words = re.sub(r"^.*\n", "", text.strip(), count=1) if "\n" in text else text
+            # "You are standing in an open field" would paint someone standing there
+            words = re.sub(r"(?i)\b(?:you are|you're)\s+(?:standing\s+|sitting\s+)?(?:in|on|at|inside|by|near)?\s*", "", words)
+            prompt = clean_prompt(words)
+            if len(prompt) < 5:
+                return None
+        found = {}
+        setting = reply.get("setting") if reply.get("setting") in ("outdoors", "indoors", "underground") else "outdoors"
+        # A small model often calls a chasm or river "outdoors" even when it's reached from a cellar
+        if came_from and came_from.setting == "underground" and setting == "outdoors" and not _OPEN_AIR.search(text):
+            setting = "underground"
         # A landmark is something seen from outside: the white house's look doesn't belong in its kitchen
-        for landmark in (reply.get("landmarks") or []) if outdoors else []:
+        for landmark in (reply.get("landmarks") or []) if setting == "outdoors" else []:
             landmark = str(landmark).strip().lower()
             # Only what the game actually mentions here, so a made-up landmark can't follow the player around
             if landmark and landmark.split()[-1] in text.lower() and landmark not in known:
                 if look := self.design_landmark(landmark, text):
                     found[landmark] = look
-        return Description(prompt, found, outdoors)
+        return Description(prompt, found, setting)
 
     def design_landmark(self, name, text):
         """One detailed look for a landmark, used in every picture of it from then on, or None."""
