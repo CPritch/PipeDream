@@ -20,6 +20,8 @@ from pipedream.world import DEFAULT_CACHE_DIR, World
 if sys.platform == 'win32':
     from pexpect.popen_spawn import PopenSpawn
 
+# What players type versus what pictures show
+_ALSO_CALLED = {"lamp": "lantern", "lantern": "lamp", "torch": "lantern", "rope": "coil of rope", "knife": "dagger"}
 _UNDERGROUND = re.compile(r"\b(underground|cave|cavern|tunnel|cellar|mine|subterranean|grotto|crypt|dungeon)", re.I)
 
 def session_name(argv, style):
@@ -76,7 +78,7 @@ class PipeDream:
             self.status_callback(msg)
 
     def start(self):
-        self.custom_print(f"[*] Launching: {self.command}")
+        print(f"[*] Launching: {self.command}")  # for the log; players don't need the command line
         self.scene_thread.start()
         
         if sys.platform == 'win32':
@@ -207,7 +209,7 @@ class PipeDream:
             if scene_id != self.latest_scene:
                 return  # the player has already moved on; paint it if they come back
             scene = without_possessions(from_title(text, title) if title else text)
-            described = self.director.describe_place(place.name, scene, set(world.landmarks), came_from)
+            described = self.director.describe_place(place.name, scene, set(world.landmarks), came_from, command)
             if not described:
                 print("   > No visual changes.")
                 return self.report_status("Ready")
@@ -235,7 +237,11 @@ class PipeDream:
             self._show(scene_id, place.image, ready=False)  # the place itself straight away, then what's new
             verdict = self.director.assess(place, news, "(comes back here)")
             image = None
-            if verdict.kind in ("change", "add", "remove") and self.painter.edits:
+            if scene_id != self.latest_scene:
+                return  # the player has moved on; a visitor is only worth painting while they're here
+            if verdict.kind == "add" and verdict.target and self.director.find(place.image, verdict.target).boxes:
+                pass  # already in the picture ("There is a bloody axe here" where the troll dropped it)
+            elif verdict.kind in ("change", "add", "remove") and self.painter.edits:
                 self.report_status("Generating Image...")
                 image, _ = self._edit(place.image, verdict.kind, verdict.edit, verdict.target)
             place.visitors[news] = image or place.image  # remembered either way, so the same news is instant
@@ -261,7 +267,12 @@ class PipeDream:
             return self.report_status("Ready")
         self.report_status("Generating Image...")
         target = acted_on or verdict.target
-        image, instruction = self._edit(place.image, verdict.kind, verdict.edit, target, search.result() if search else None)
+        found = search.result() if search else None
+        image, instruction = self._edit(place.image, verdict.kind, verdict.edit, target, found)
+        if image and verdict.expect and not self.director.find(image, verdict.expect).boxes:
+            # The edit was meant to reveal something the story now depends on (the trap door): one more go
+            print(f"   > No {verdict.expect} to be seen yet, trying again")
+            image = self._edit(place.image, verdict.kind, verdict.edit, target, found, first_attempt=1)[0] or image
         if image is None:
             return self.report_status("Ready")
         place.image, place.visitors = image, {}
@@ -269,7 +280,7 @@ class PipeDream:
         self.world.save()
         self._show(scene_id, place.image)
 
-    def _edit(self, image, kind, instruction, target, found=None):
+    def _edit(self, image, kind, instruction, target, found=None, first_attempt=0):
         """Apply an edit, confined to where the target is in the picture.
 
         Changes and removals need their target in the picture; only an addition ("a thief is here") may repaint
@@ -279,6 +290,8 @@ class PipeDream:
             found = Finding([])
         elif found is None:
             found = self.director.find(image, target) if target else Finding([])
+        if kind != "add" and not found.boxes and target in _ALSO_CALLED:
+            found = self.director.find(image, _ALSO_CALLED[target])  # "take lamp" when the picture shows a lantern
         if kind != "add" and not found.boxes:
             print(f"   > No {target or 'target'} in the picture to {'remove' if kind == 'remove' else 'change'}.")
             return None, instruction
@@ -287,7 +300,7 @@ class PipeDream:
             instruction = f"Remove the {target}, leaving only bare {found.surface or 'surroundings'} where it was."
         print(f"   > Edit: {instruction}" + (f" (at the {target})" if found.boxes else ""))
         edited = self.painter.edit(image, instruction, found.boxes, REMOVAL_CHANGE if kind == "remove" else None,
-                                   attempts=2 if kind == "remove" else 1)
+                                   attempts=2 if kind == "remove" else 1, first_attempt=first_attempt)
         if edited is None:
             print("   > The edit made no visible difference, so it was dropped.")
         return edited, instruction

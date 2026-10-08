@@ -9,7 +9,7 @@ from pipedream.gametext import clean_prompt, command_object
 
 # llama-server constrains each reply to a JSON schema, so there's no free text to parse. Each question is kept
 # narrow because a 4B model answers one clear question far more reliably than a combined one.
-_PROMPT_LIMIT = 400
+_PROMPT_LIMIT = 320  # about the 50 words asked for; more is the model padding with invented details
 PLACE_SCHEMA = {
     "type": "object",
     # Deciding the setting first, before writing the prompt, stops "Outdoors: true." leaking into the prompt itself
@@ -78,7 +78,8 @@ ASSESS_CHANGE = (
     "- add: something that wasn't there appears: a creature or person arrives or is here, an object is dropped.\n"
     "- dark: the player can no longer see anything.\n"
     "target: the thing in the picture that changes or is removed, in two or three words, using the game's own name "
-    "for it (e.g. 'brass lantern', 'troll', 'trap door', 'trophy case'). Empty if kind is none, add or dark.\n"
+    "for it (e.g. 'brass lantern', 'troll', 'trap door', 'trophy case'); for add, the thing that appears (e.g. "
+    "'bloody axe', 'thief'). Empty if kind is none or dark.\n"
     "edit: an instruction for an image editor about only this latest change, starting with a verb and naming the "
     "thing the player acted on, e.g. 'Remove the brass lantern.', 'Open the trap door, revealing a rickety staircase "
     "descending into darkness.', 'Drag the rug into a heap at the side, revealing a closed wooden trap door in the "
@@ -114,12 +115,20 @@ class Finding(NamedTuple):
 
 
 class Verdict(NamedTuple):
-    kind: str  # none, change, remove or dark
+    kind: str  # none, change, add, remove or dark
     target: str = ""  # what in the picture the change applies to
     edit: str = ""  # instruction for the image editor
+    expect: str = ""  # something the edited picture must show, e.g. the trap door a moved rug reveals
 
 
 NO_CHANGE = Verdict("none")
+
+
+def _revealed_thing(phrase):
+    """The thing a reveal is about: "a rickety staircase descending into darkness" -> "rickety staircase",
+    "the dusty cover of a closed trap door" -> "trap door"."""
+    phrase = re.split(r"\s+(?:descending|ascending|leading|going|running|that|which|into|with|beneath|below)\b", phrase)[0]
+    return " ".join(re.sub(r"^(?:the|a|an)\s+", "", phrase.strip()).split()[-2:])
 
 
 def obvious_verdict(command, reply):
@@ -133,9 +142,15 @@ def obvious_verdict(command, reply):
     refused = re.search(r"\b(already|locked|can't|cannot|won't|isn't|not|no)\b", reply)
     if words[0] == "open" and not refused and (reply == "opened." or re.search(r"\bopens?\b|\bopened\b", reply)):
         revealed = re.search(r"\breveal(?:s|ing)?\s+(.+?)[.!]", reply)  # "opens to reveal a rickety staircase"
-        return Verdict("change", thing, f"Open the {thing}" + (f", revealing {revealed[1]}." if revealed else "."))
+        return Verdict("change", thing, f"Open the {thing}" + (f", revealing {revealed[1]}." if revealed else "."),
+                       _revealed_thing(revealed[1]) if revealed else "")
     if words[0] == "close" and not refused and (reply == "closed." or re.search(r"\bcloses?\b|\bclosed\b|\bshut\b", reply)):
         return Verdict("change", thing, f"Close the {thing}.")
+    revealed = re.search(r"\breveal(?:s|ing)?\s+(.+?)[.!]", reply)
+    if words[0] in ("move", "push", "pull", "lift", "roll", "drag", "shift") and revealed and not refused:
+        # Painting what's there now works where "move the rug aside" leaves the rug in place
+        return Verdict("change", thing, f"Replace the {thing} with bare floor and {revealed[1]}; the {thing} lies "
+                                        f"crumpled at the edge.", _revealed_thing(revealed[1]))
     if words[0] in ("put", "place") and reply == "done.":
         item = re.sub(r"^(the|a|an)\s+", "", re.split(r"\s+(?:in|into|on|onto|inside|under)\s+", " ".join(words[1:]))[0])
         return Verdict("change", thing, f"Place the {item} in the {thing}.")
@@ -146,7 +161,7 @@ class Director:
     def __init__(self, llm_url):
         self.llm_url = llm_url
 
-    def describe_place(self, name, text, known=(), came_from=None):
+    def describe_place(self, name, text, known=(), came_from=None, command=None):
         """A Description for painting a place the player has just found, or None.
 
         `known` names the landmarks already designed. They aren't shown to the model: told about a house, a small
@@ -176,8 +191,11 @@ class Director:
                 return None
         found = {}
         setting = reply.get("setting") if reply.get("setting") in ("outdoors", "indoors", "underground") else "outdoors"
-        # A small model often calls a chasm or river "outdoors" even when it's reached from a cellar
-        if came_from and came_from.setting == "underground" and setting == "outdoors" and not _OPEN_AIR.search(text):
+        # A small model calls a chasm "outdoors" or a gallery "indoors" even when it's reached from a cellar. Climbing
+        # up out of the cellar into the living room does leave the underground, so that's left to the model.
+        climbing = (command or "").strip().lower() in ("u", "up", "climb", "climb up", "go up")
+        if came_from and came_from.setting == "underground" and setting != "underground" and not climbing \
+                and not _OPEN_AIR.search(text):
             setting = "underground"
         # A landmark is something seen from outside: the white house's look doesn't belong in its kitchen
         for landmark in (reply.get("landmarks") or []) if setting == "outdoors" else []:

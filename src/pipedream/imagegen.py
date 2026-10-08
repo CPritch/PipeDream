@@ -65,7 +65,7 @@ class Painter:
         # Style first: the image model weights the start of the prompt most
         return self._save(self.generator.generate(f"{self.style}. {prompt}", seed=self.seed if seed is None else seed))
 
-    def edit(self, image, instruction, boxes=(), min_change=None, attempts=1):
+    def edit(self, image, instruction, boxes=(), min_change=None, attempts=1, first_attempt=0):
         """Edit a picture. With boxes (0-1000 coordinates, from the director), only those areas are repainted.
 
         Returns the new picture's path, or None if no attempt changed the picture by at least `min_change`.
@@ -76,7 +76,7 @@ class Painter:
         width, height = self.generator.width, self.generator.height
         mask = mask_png(width, height, boxes) if boxes else None
         # The edit model sometimes returns the picture practically unchanged; another seed often takes
-        for attempt in range(attempts):
+        for attempt in range(first_attempt, first_attempt + attempts):
             seed = self.seed + attempt if self.seed >= 0 else -1
             png = self.generator.generate(prompt, [image], seed=seed, init_image=image if mask else None, mask=mask)
             png = paste(image, png, boxes) if mask else paste_changes(image, png)

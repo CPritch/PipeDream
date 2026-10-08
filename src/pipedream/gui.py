@@ -74,8 +74,7 @@ class GameWorker(QObject):
 
     def handle_image(self, path):
         full_path = Path(path).absolute().as_uri()
-        self.image_received.emit(full_path)
-        self.status_updated.emit("Ready") # Reset status when image arrives
+        self.image_received.emit(full_path)  # the engine says when it's Ready: more may be on the way
 
     def handle_status(self, msg):
         self.status_updated.emit(msg)
