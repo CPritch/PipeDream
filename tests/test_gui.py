@@ -11,9 +11,8 @@ from pipedream.gui import Backend
 
 
 def test_shutdown_while_waiting_for_input_does_not_hang(tmp_path, monkeypatch):
-    monkeypatch.setattr(Director, "describe_scene", lambda self, text, previous_text="": None)
-    monkeypatch.setattr("pipedream.cache.DEFAULT_CACHE_DIR", str(tmp_path))
-    monkeypatch.setattr("pipedream.navigator.DEFAULT_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(Director, "describe_place", lambda self, name, text: None)
+    monkeypatch.setattr("pipedream.engine.DEFAULT_CACHE_DIR", str(tmp_path))
 
     app = QGuiApplication.instance() or QGuiApplication([])
     # Explicit URLs mean no local servers are started; the director is stubbed so they're never called

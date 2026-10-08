@@ -12,7 +12,8 @@ import pytest
 
 from pipedream import runtime
 from pipedream.director import Director
-from pipedream.imagegen import ImageGenerator
+from pipedream.imagegen import ImageGenerator, Painter, darkness_png
+from pipedream.world import Place
 
 
 @pytest.fixture
@@ -56,45 +57,56 @@ def chat_reply(scene):
     return json_reply({"choices": [{"message": {"content": json.dumps(scene)}}]})
 
 
-def test_director_returns_styled_prompt_for_a_new_scene(server):
+def test_director_describes_a_new_place_without_directions(server):
     url, routes, seen = server
-    routes[("POST", "/v1/chat/completions")] = chat_reply(
-        {"location": "Field", "category": "scene_changed", "prompt": "An open field before a white house."})
+    routes[("POST", "/v1/chat/completions")] = chat_reply({"prompt": "An open field before a white house. Exits: north."})
 
-    prompt = Director(None, url, style_prompt="Pencil sketch").describe_scene("You are in an open field.")
+    prompt = Director(url).describe_place("West of House", "West of House\nYou are in an open field.")
 
-    assert prompt == "Pencil sketch. An open field before a white house."
+    assert prompt == "An open field before a white house."
     request = json.loads(seen[0][2])
     assert request["response_format"]["type"] == "json_schema"
+    assert "West of House" in request["messages"][1]["content"]
 
 
-@pytest.mark.parametrize("category", ["action_failed", "no_change"])
-def test_director_returns_none_without_a_scene_change(server, category):
+@pytest.mark.parametrize("reply, expected", [
+    ({"kind": "change", "edit": "The trap door stands open."}, ("change", "The trap door stands open.")),
+    ({"kind": "none", "edit": "The lamp is gone."}, ("none", "")),
+    ({"kind": "dark", "edit": ""}, ("dark", "")),
+    ({"kind": "change", "edit": "Exits: north."}, ("none", "")),  # nothing left to paint once cleaned
+])
+def test_director_assesses_changes_in_the_current_place(server, reply, expected):
+    url, routes, seen = server
+    routes[("POST", "/v1/chat/completions")] = chat_reply(reply)
+    living_room = Place("1", "Living Room", "Living Room", prompt="A living room with a rug.", edits=["The rug is aside."])
+
+    assert Director(url).assess(living_room, "The door reluctantly opens.", "open trap door") == expected
+    content = json.loads(seen[0][2])["messages"][1]["content"]
+    assert "A living room with a rug. The rug is aside." in content and "open trap door" in content
+
+
+@pytest.mark.parametrize("location, expected", [("Field", "Field"), ("none", None), ("", None)])
+def test_director_locates_places_for_games_without_titles(server, location, expected):
     url, routes, _ = server
-    routes[("POST", "/v1/chat/completions")] = chat_reply({"location": "Field", "category": category, "prompt": "A field."})
+    routes[("POST", "/v1/chat/completions")] = chat_reply({"location": location})
 
-    assert Director(None, url).describe_scene("You are carrying nothing.", "You are in a field.") is None
+    assert Director(url).locate("You are in an open field.") == expected
 
 
-def test_director_ignores_text_that_describes_no_place(server):
+def test_director_keeps_the_complete_sentences_of_a_cut_off_reply(server):
     url, routes, _ = server
-    routes[("POST", "/v1/chat/completions")] = chat_reply({"location": "none", "category": "scene_changed", "prompt": "A title card."})
+    cut_off = '{"prompt": "A dark and damp cellar. A steep metal ramp rises from the floor. Water drips from the'
+    routes[("POST", "/v1/chat/completions")] = json_reply({"choices": [{"message": {"content": cut_off}}]})
 
-    assert Director(None, url).describe_scene("WELCOME TO ADVENTURE!! WOULD YOU LIKE INSTRUCTIONS?") is None
-
-
-def test_director_always_paints_the_first_place(server):
-    url, routes, _ = server
-    routes[("POST", "/v1/chat/completions")] = chat_reply({"location": "Field", "category": "no_change", "prompt": "An open field."})
-
-    assert Director(None, url, style_prompt="Ink").describe_scene("You are in an open field.") == "Ink. An open field."
+    assert Director(url).describe_place("Cellar", "Cellar") == "A dark and damp cellar. A steep metal ramp rises from the floor."
 
 
 def test_director_survives_a_failing_server(server):
     url, routes, _ = server
     routes[("POST", "/v1/chat/completions")] = json_reply({"error": "boom"}, status=500)
 
-    assert Director(None, url).describe_scene("You are in an open field.") is None
+    assert Director(url).describe_place("Field", "You are in an open field.") is None
+    assert Director(url).locate("You are in an open field.") is None
 
 
 def test_image_generator_polls_the_job_and_sends_references(server, tmp_path):
@@ -121,6 +133,32 @@ def test_image_generator_raises_when_the_job_fails(server):
 
     with pytest.raises(RuntimeError, match="out of memory"):
         ImageGenerator(url, runtime.FOUR_STEP).generate("A dark forest.")
+
+
+def test_painter_edits_keep_the_style_and_send_the_picture(tmp_path):
+    calls = []
+
+    class Generator:
+        width, height = 64, 48
+
+        def generate(self, prompt, reference_images=(), seed=-1):
+            calls.append((prompt, list(reference_images), seed))
+            return b"PNG"
+
+    painter = Painter(Generator(), str(tmp_path), "Ink", seed=7)
+    base = painter.paint("A cellar.")
+    edited = painter.edit(base, "The trap door is open.")
+
+    assert calls == [("Ink. A cellar.", [], 7), ("Ink. The trap door is open. Keep everything else exactly the same.", [base], 7)]
+    assert open(edited, "rb").read() == b"PNG" and edited != base
+
+
+def test_darkness_is_a_valid_near_black_png():
+    from PySide6.QtGui import QImage
+
+    image = QImage.fromData(darkness_png(64, 48))
+    assert (image.width(), image.height()) == (64, 48)
+    assert max(image.pixelColor(x, y).value() for x in range(0, 64, 8) for y in range(0, 48, 8)) < 20
 
 
 def serve_file(routes, path, data, fail_ranges=()):
