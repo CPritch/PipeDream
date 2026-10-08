@@ -10,13 +10,14 @@ from pipedream.director import Director
 from pipedream.cache import SmartCache
 from pipedream.imagegen import ImageGenerator
 from pipedream.navigator import Navigator
-from pipedream.runtime import LocalBackends
+from pipedream.runtime import LocalBackends, PROFILES, DEFAULT_PROFILE
 
 if sys.platform == 'win32':
     from pexpect.popen_spawn import PopenSpawn
 
 class PipeDream:
-    def __init__(self, command, style=None, clear_cache=False, img2img=False, cache_dir=None, llm_url=None, image_url=None):
+    def __init__(self, command, style=None, clear_cache=False, img2img=False, cache_dir=None, llm_url=None, image_url=None,
+                 image_model=DEFAULT_PROFILE, size=(768, 576)):
         # Keep the argv list intact so paths with spaces survive the trip to pexpect
         self.argv = shlex.split(command) if isinstance(command, str) else list(command)
         self.command = shlex.join(self.argv)
@@ -31,7 +32,8 @@ class PipeDream:
         self.img2img = img2img
 
         self.director = Director(self, llm_url, style_prompt=style, img2img=self.img2img)
-        self.cache = SmartCache(self, ImageGenerator(image_url), session_id=self.session_id, style_prompt=style, img2img=self.img2img, cache_dir=cache_dir)
+        generator = ImageGenerator(image_url, PROFILES[image_model].sampling, *size)
+        self.cache = SmartCache(self, generator, session_id=self.session_id, style_prompt=style, img2img=self.img2img, cache_dir=cache_dir)
         self.navigator = Navigator(session_id=self.session_id, cache_dir=cache_dir)
 
         if clear_cache:
@@ -180,6 +182,12 @@ class PipeDream:
 
         self.previous_text = text
 
+def parse_size(value):
+    match = re.fullmatch(r'(\d+)x(\d+)', value)
+    if not match or int(match[1]) % 16 or int(match[2]) % 16:
+        raise argparse.ArgumentTypeError("expected WIDTHxHEIGHT, both multiples of 16, e.g. 768x576")
+    return int(match[1]), int(match[2])
+
 def build_parser(description):
     parser = argparse.ArgumentParser(description=description)
 
@@ -189,6 +197,8 @@ def build_parser(description):
     parser.add_argument('--img2img', action='store_true', help="Use the previous scene as a reference image")
     parser.add_argument('--llm-url', default=None, help="Use an already-running llama-server instead of starting one")
     parser.add_argument('--image-url', default=None, help="Use an already-running sd-server instead of starting one")
+    parser.add_argument('--image-model', choices=list(PROFILES), default=DEFAULT_PROFILE, help="Image model (default: %(default)s)")
+    parser.add_argument('--size', type=parse_size, default=(768, 576), help="Image size as WIDTHxHEIGHT (default: 768x576)")
     parser.add_argument('game_command', nargs=argparse.REMAINDER, help="The command to run the game")
     return parser
 
@@ -199,9 +209,10 @@ def main():
         parser.print_help()
         sys.exit(1)
 
-    with LocalBackends(args.llm_url, args.image_url).start() as backends:
+    with LocalBackends(args.llm_url, args.image_url, args.image_model).start() as backends:
         engine = PipeDream(args.game_command, style=args.style, clear_cache=args.clear_cache, img2img=args.img2img,
-                           llm_url=backends.llm_url, image_url=backends.image_url)
+                           llm_url=backends.llm_url, image_url=backends.image_url,
+                           image_model=backends.profile, size=args.size)
         engine.start()
 
 if __name__ == "__main__":

@@ -116,7 +116,7 @@ ApplicationWindow {
                 Item { Layout.fillWidth: true } // Spacer
 
                 Text {
-                    text: "LOCAL · Built with Qwen"
+                    text: "LOCAL · " + backend.image_model
                     color: "#00ff00"
                     font.family: "Courier New"
                     font.pixelSize: 12

@@ -10,8 +10,10 @@ import socket
 import subprocess
 import sys
 import tarfile
+import threading
 import time
 import zipfile
+from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
 from typing import NamedTuple
 
 import platformdirs
@@ -63,19 +65,65 @@ RUNTIMES = {
     },
 }
 
-# Qwen-Image-2.1 (Viggle 6-step turbo) for images. Its Qwen3-VL-8B text encoder doubles as the director LLM.
-MODELS = {
-    "diffusion": _hf("Viggle/Qwen-Image-2.1-viggle-turbo", "Qwen-Image-2.1-viggle-turbo-v0.3-6step-Q4_K_M.gguf",
-                     4335931552, "047dd62db7c7a55e6bb796e89710cb31457e3b944e0f5f94d0ebe71d1b9c8cae"),
-    "vae": _hf("Comfy-Org/Qwen-Image-2.1", "vae/qwen_image_2.1_vae_bf16.safetensors",
-               675509688, "bb21f7473051e1ac368515dd3f2e15cd44d7a11748ee8823e1ddca3e4876b7c9"),
-    "llm": _hf("Qwen/Qwen3-VL-8B-Instruct-GGUF", "Qwen3VL-8B-Instruct-Q4_K_M.gguf",
-               5027784800, "67d1659bfe71b89d50b45a4ad1a9e5b997e5bb16ce5da66a6a6167abd569e9e2"),
-    "vision": _hf("Qwen/Qwen3-VL-8B-Instruct-GGUF", "mmproj-Qwen3VL-8B-Instruct-F16.gguf",
-                  1159029824, "ca524100ebf825c9a870db1c580d03879e0da0ab2541697e2458e64891cf9d38"),
+class ImageProfile(NamedTuple):
+    files: dict  # role (diffusion, vae, llm, optional vision and director) -> Download
+    sampling: dict  # sd-server sample_params
+    quantize: str = ""  # quantize the downloaded diffusion weights to this ggml type on first install
+    devices: tuple = ()  # ggml device prefixes the model is known to render correctly on; empty means any
+
+
+FOUR_STEP = {"sample_method": "euler", "sample_steps": 4, "guidance": {"txt_cfg": 1.0}}
+
+# Viggle's Qwen-Image-2.1 turbo schedule: 6 steps, no CFG. sd.cpp wants the terminal 0 included
+# (steps + 1 sigmas); without it the last step is dropped and the image is left noisy.
+QWEN_TURBO = {"sample_method": "euler", "sample_steps": 6, "custom_sigmas": [1.0, 0.9375, 0.875, 0.75, 0.5, 0.25, 0.0],
+              "guidance": {"txt_cfg": 1.0}}
+
+# Where it's good enough, the image model's text encoder doubles as the director LLM, so there's only one
+# language model to download. Otherwise a profile names its own "director".
+# Timings are for a 768x576 scene on an RTX 5060 Laptop GPU.
+PROFILES = {
+    # Microsoft Mage-Flow Turbo (MIT), ~1.8 s. The published int8 weights only run on CUDA, so the bf16 weights are
+    # quantized to q8_0 locally. Even then sd.cpp's Vulkan backend renders Mage-Flow as noise (as of master-945,
+    # on NVIDIA and AMD alike), so it's CUDA-only for now.
+    "mage-flow": ImageProfile({
+        "diffusion": _hf("Comfy-Org/Mage-Flow", "diffusion_models/mage_flow_turbo_bf16.safetensors",
+                         8231536760, "6df47df3d7efc9ebdad075b87b3e9e4f74d09dca672d592271788f0ee27ab97d"),
+        "vae": _hf("Comfy-Org/Mage-Flow", "vae/mage_flow_vae_bf16.safetensors",
+                   345053056, "34e076dc1e8a15321e1e07be5111d59cf16dd10b804b7c7e20b4de29013427e0"),
+        "llm": _hf("Qwen/Qwen3-VL-4B-Instruct-GGUF", "Qwen3VL-4B-Instruct-Q4_K_M.gguf",
+                   2497281664, "66358cb18bb6b3b1b6675aa412c7a88ef01d228f481184d13668e5201c730a0a"),
+    }, FOUR_STEP, quantize="q8_0", devices=("CUDA",)),
+    # Qwen-Image-2.1 with Viggle's 6-step turbo (non-commercial), the moodiest look, ~12 s
+    "qwen-image": ImageProfile({
+        "diffusion": _hf("Viggle/Qwen-Image-2.1-viggle-turbo", "Qwen-Image-2.1-viggle-turbo-v0.3-6step-Q4_K_M.gguf",
+                         4335931552, "047dd62db7c7a55e6bb796e89710cb31457e3b944e0f5f94d0ebe71d1b9c8cae"),
+        "vae": _hf("Comfy-Org/Qwen-Image-2.1", "vae/qwen_image_2.1_vae_bf16.safetensors",
+                   675509688, "bb21f7473051e1ac368515dd3f2e15cd44d7a11748ee8823e1ddca3e4876b7c9"),
+        "llm": _hf("Qwen/Qwen3-VL-8B-Instruct-GGUF", "Qwen3VL-8B-Instruct-Q4_K_M.gguf",
+                   5027784800, "67d1659bfe71b89d50b45a4ad1a9e5b997e5bb16ce5da66a6a6167abd569e9e2"),
+        "vision": _hf("Qwen/Qwen3-VL-8B-Instruct-GGUF", "mmproj-Qwen3VL-8B-Instruct-F16.gguf",
+                      1159029824, "ca524100ebf825c9a870db1c580d03879e0da0ab2541697e2458e64891cf9d38"),
+    }, QWEN_TURBO),
+    # FLUX.2 klein 4B (Apache 2.0) with BFL's small decoder, ~4.4 s
+    "flux2-klein": ImageProfile({
+        "diffusion": _hf("leejet/FLUX.2-klein-4B-GGUF", "flux-2-klein-4b-Q4_0.gguf",
+                         2460378560, "d1023499ef3f2f82ff7c50e6778495195c1b6cc34835741778868428111f9ff4"),
+        "vae": _hf("black-forest-labs/FLUX.2-small-decoder", "full_encoder_small_decoder.safetensors",
+                   249519092, "ea4273f02d1fafbf8e1d1c2cf6018ed8748652eb0bf34f2dd91171f16f15ab62"),
+        "llm": _hf("unsloth/Qwen3-4B-GGUF", "Qwen3-4B-Q4_K_M.gguf",
+                   2497281312, "f6f851777709861056efcdad3af01da38b31223a3ba26e61a4f8bf3a2195813a"),
+        # Plain Qwen3-4B misreads openings and copies "You are..." into prompts, which paints the player in
+        "director": _hf("Qwen/Qwen3-VL-4B-Instruct-GGUF", "Qwen3VL-4B-Instruct-Q4_K_M.gguf",
+                        2497281664, "66358cb18bb6b3b1b6675aa412c7a88ef01d228f481184d13668e5201c730a0a"),
+    }, FOUR_STEP),
 }
+DEFAULT_PROFILE = "mage-flow"
+FALLBACK_PROFILE = "flux2-klein"  # ~6 s on Vulkan
 
 SERVER_BINARIES = {"sd": "sd-server", "llama": "llama-server"}
+CHUNK_SIZE = 64 << 20
+CONNECTIONS = 8
 EXE = ".exe" if sys.platform == "win32" else ""
 
 
@@ -84,34 +132,68 @@ def _gb(n):
 
 
 def download(item, dest, progress=print):
-    """Stream `item` to `dest`, resuming a previous partial download and checking the sha256."""
-    part = dest + ".part"
-    done = os.path.getsize(part) if os.path.exists(part) else 0
+    """Fetch `item` to `dest` over parallel ranged connections, then check the sha256.
+
+    A single long-lived connection to the Hugging Face CDN can be throttled to a few MB/s while parallel ranges
+    each get tens of MB/s. Finished chunks are recorded, so an interrupted download resumes where it stopped.
+    """
+    part, state = dest + ".part", dest + ".part.chunks"
+    chunks = [(start, min(start + CHUNK_SIZE, item.size) - 1) for start in range(0, item.size, CHUNK_SIZE)]
+    done = set()
+    if os.path.exists(part) and os.path.exists(state):
+        with open(state) as f:
+            done = {int(line) for line in f if line.strip()}
+    else:
+        with open(part, "wb") as f:
+            f.truncate(item.size)
+        open(state, "w").close()
+
+    lock = threading.Lock()
+    received = [sum(chunks[i][1] - chunks[i][0] + 1 for i in done)]
+
+    def fetch(index, attempts=3):
+        start, end = chunks[index]
+        for attempt in range(attempts):
+            try:
+                with requests.get(item.url, headers={"Range": f"bytes={start}-{end}"}, stream=True, timeout=60) as r:
+                    r.raise_for_status()
+                    if r.status_code != 206:
+                        raise RuntimeError(f"{item.url} does not support ranged downloads")
+                    with open(part, "r+b") as f:
+                        f.seek(start)
+                        for block in r.iter_content(1 << 20):
+                            f.write(block)
+                            with lock:
+                                received[0] += len(block)
+                break
+            except requests.RequestException:
+                if attempt == attempts - 1:
+                    raise
+        with lock, open(state, "a") as f:
+            f.write(f"{index}\n")
+
+    with ThreadPoolExecutor(CONNECTIONS) as pool:
+        futures = [pool.submit(fetch, i) for i in range(len(chunks)) if i not in done]
+        while futures:
+            finished, pending = wait(futures, timeout=1, return_when=FIRST_EXCEPTION)
+            progress(f"Downloading {item.name}: {_gb(received[0])} / {_gb(item.size)}")
+            failed = [f for f in finished if f.exception()]
+            if failed:
+                pool.shutdown(cancel_futures=True)
+                raise failed[0].exception()
+            futures = list(pending)
+
+    progress(f"Verifying {item.name}...")
     digest = hashlib.sha256()
-    if done:
-        with open(part, "rb") as f:
-            for chunk in iter(lambda: f.read(1 << 20), b""):
-                digest.update(chunk)
-
-    headers = {"Range": f"bytes={done}-"} if done else {}
-    with requests.get(item.url, headers=headers, stream=True, timeout=60) as r:
-        r.raise_for_status()
-        if done and r.status_code != 206:  # server ignored the Range header, start again
-            done, digest = 0, hashlib.sha256()
-        last_report = 0.0
-        with open(part, "ab" if done else "wb") as f:
-            for chunk in r.iter_content(1 << 20):
-                f.write(chunk)
-                digest.update(chunk)
-                done += len(chunk)
-                if time.monotonic() - last_report > 1:
-                    progress(f"Downloading {item.name}: {_gb(done)} / {_gb(item.size)}")
-                    last_report = time.monotonic()
-
-    if done != item.size or digest.hexdigest() != item.sha256:
+    with open(part, "rb") as f:
+        for block in iter(lambda: f.read(8 << 20), b""):
+            digest.update(block)
+    if os.path.getsize(part) != item.size or digest.hexdigest() != item.sha256:
         os.remove(part)
+        os.remove(state)
         raise RuntimeError(f"Download of {item.name} was corrupt (size or checksum mismatch), please try again")
     os.replace(part, dest)
+    os.remove(state)
 
 
 def _extract(archive, dest):
@@ -130,8 +212,23 @@ def _find_binary(root, name):
     raise RuntimeError(f"{name} not found in {root}")
 
 
-def install(progress=print):
+def _quantize(sd_cli, source, dest, weight_type, progress):
+    progress("Optimising the image model for your GPU (one-time, a couple of minutes)...")
+    partial = dest[:-len(".gguf")] + ".partial.gguf"
+    result = subprocess.run([sd_cli, "-M", "convert", "-m", source, "-o", partial, "--type", weight_type],
+                            capture_output=True, text=True)
+    if result.returncode != 0 or not os.path.exists(partial):
+        raise RuntimeError(f"Could not quantize {os.path.basename(source)}:\n{result.stdout[-1500:]}")
+    os.replace(partial, dest)
+    os.remove(source)  # the full-precision download is no longer needed
+
+
+def install(profile=DEFAULT_PROFILE, progress=print):
     """Fetch any missing server builds and models. Returns {key: path} for everything needed to run."""
+    return install_models(profile, install_runtimes(progress), progress)
+
+
+def install_runtimes(progress=print):
     key = (platform.system(), platform.machine())
     if key not in RUNTIMES:
         raise RuntimeError(f"No local AI runtime is available for {key[0]} {key[1]} yet")
@@ -152,14 +249,29 @@ def install(progress=print):
         os.chmod(binary, 0o755)  # zip archives don't keep the executable bit
         # e.g. PIPEDREAM_SD_SERVER=/path/to/sd-server for a local CUDA build (~30% faster than Vulkan on NVIDIA)
         paths[kind] = os.getenv(f"PIPEDREAM_{kind.upper()}_SERVER") or binary
+        if kind == "sd":
+            paths["sd_cli"] = _find_binary(folder, "sd-cli")
+            os.chmod(paths["sd_cli"], 0o755)
+    return paths
 
+
+def install_models(profile, paths, progress=print):
+    paths = dict(paths)
     os.makedirs(MODELS_DIR, exist_ok=True)
-    for kind, item in MODELS.items():
+    chosen = PROFILES[profile]
+    for role, item in chosen.files.items():
         path = os.path.join(MODELS_DIR, item.name)
+        quantized = os.path.splitext(path)[0] + f"-{chosen.quantize}.gguf" if role == "diffusion" and chosen.quantize else None
+        if quantized and os.path.exists(quantized):
+            paths[role] = quantized
+            continue
         # A matching size is enough here; the checksum was verified when the file was downloaded
         if not (os.path.exists(path) and os.path.getsize(path) == item.size):
             download(item, path, progress)
-        paths[kind] = path
+        if quantized:
+            _quantize(paths["sd_cli"], path, quantized, chosen.quantize, progress)
+            path = quantized
+        paths[role] = path
     return paths
 
 
@@ -169,10 +281,20 @@ def _free_port():
         return s.getsockname()[1]
 
 
-def _list_gpus(llama_server):
-    """ggml device names (e.g. Vulkan0, Vulkan1); both servers share the same naming."""
-    out = subprocess.run([llama_server, "--list-devices"], capture_output=True, text=True, timeout=60).stdout
-    return re.findall(r"^\s+(\w+\d+):", out, re.MULTILINE)
+def list_devices(server):
+    """GPU device names a server can use, e.g. ["Vulkan0", "Vulkan1"] or ["CUDA0"]."""
+    out = subprocess.run([server, "--list-devices"], capture_output=True, text=True, timeout=60).stdout
+    # llama-server prints "  Vulkan0: NAME", sd-server prints "Vulkan0<tab>NAME"
+    return re.findall(r"^\s*([A-Za-z]+\d+)[:\t]", out, re.MULTILINE)
+
+
+def choose_profile(requested, devices, progress=print):
+    """Fall back to a model that renders correctly when the requested one doesn't support these devices."""
+    allowed = PROFILES[requested].devices
+    if allowed and not any(d.startswith(allowed) for d in devices):
+        progress(f"{requested} needs a {'/'.join(allowed)} build of sd-server for now, using {FALLBACK_PROFILE} instead")
+        return FALLBACK_PROFILE
+    return requested
 
 
 def _die_with_parent():
@@ -185,9 +307,10 @@ def _die_with_parent():
 class LocalBackends:
     """Starts whichever of the director LLM and image servers wasn't supplied as a URL."""
 
-    def __init__(self, llm_url=None, image_url=None):
+    def __init__(self, llm_url=None, image_url=None, profile=DEFAULT_PROFILE):
         self.llm_url = llm_url
         self.image_url = image_url
+        self.profile = profile
         self.processes = []
         atexit.register(self.stop)
 
@@ -200,23 +323,27 @@ class LocalBackends:
     def start(self, progress=print):
         if self.llm_url and self.image_url:
             return self
-        paths = install(progress)
-        gpus = _list_gpus(paths["llama"])
+        paths = install_runtimes(progress)
+        if not self.image_url:
+            self.profile = choose_profile(self.profile, list_devices(paths["sd"]), progress)
+        paths = install_models(self.profile, paths, progress)
+        gpus = list_devices(paths["llama"])
         # Image generation needs the big GPU. Give the LLM a second GPU if there is one (e.g. an iGPU), else the CPU.
         llm_device = os.getenv("PIPEDREAM_LLM_DEVICE") or (gpus[1] if len(gpus) > 1 else "none")
 
         if not self.image_url:
             port = _free_port()
+            vision = ["--llm_vision", paths["vision"]] if "vision" in paths else []
             self._spawn("sd-server", [
                 paths["sd"], "--listen-port", str(port),
                 "--diffusion-model", paths["diffusion"], "--vae", paths["vae"],
-                "--llm", paths["llm"], "--llm_vision", paths["vision"], "--diffusion-fa",
+                "--llm", paths["llm"], *vision, "--diffusion-fa",
             ])
             self.image_url = f"http://127.0.0.1:{port}"
         if not self.llm_url:
             port = _free_port()
             self._spawn("llama-server", [
-                paths["llama"], "--port", str(port), "-m", paths["llm"],
+                paths["llama"], "--port", str(port), "-m", paths.get("director", paths["llm"]),
                 "--device", llm_device, "-c", "8192", "-np", "1",
             ])
             self.llm_url = f"http://127.0.0.1:{port}"
@@ -224,7 +351,18 @@ class LocalBackends:
         progress("Loading AI models...")
         self._wait_ready(self.llm_url + "/health")
         self._wait_ready(self.image_url + "/sdcpp/v1/capabilities")
+        if self.processes:
+            self._warm_up()
         return self
+
+    def _warm_up(self):
+        # sd-server loads its weights on the first job. Queue a tiny one now so that happens while the game
+        # starts and the director reads the opening, not after. The API is async, so this returns at once.
+        try:
+            requests.post(f"{self.image_url}/sdcpp/v1/img_gen", timeout=10, json={
+                "prompt": "warm up", "width": 256, "height": 256, "sample_params": {"sample_steps": 1}})
+        except requests.RequestException:
+            pass
 
     def _spawn(self, name, argv):
         os.makedirs(LOGS_DIR, exist_ok=True)
@@ -257,7 +395,7 @@ class LocalBackends:
                 proc.terminate()
         for proc in self.processes:
             try:
-                proc.wait(timeout=10)
+                proc.wait(timeout=2)  # they hold nothing worth a graceful shutdown, so don't keep the user waiting
             except subprocess.TimeoutExpired:
                 proc.kill()
         self.processes = []

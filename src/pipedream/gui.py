@@ -9,20 +9,23 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
 
 from pipedream.engine import PipeDream, build_parser
-from pipedream.runtime import LocalBackends
+from pipedream.runtime import LocalBackends, DEFAULT_PROFILE
 
 class GameWorker(QObject):
     text_received = Signal(str)
     image_received = Signal(str)
     status_updated = Signal(str)
+    model_chosen = Signal(str)
 
-    def __init__(self, command, style=None, clear_cache=False, img2img=False, llm_url=None, image_url=None):
+    def __init__(self, command, style=None, clear_cache=False, img2img=False, llm_url=None, image_url=None,
+                 image_model=DEFAULT_PROFILE, size=(768, 576)):
         super().__init__()
         self.command = command
         self.style = style
         self.clear_cache = clear_cache
         self.img2img = img2img
-        self.backends = LocalBackends(llm_url, image_url)
+        self.size = size
+        self.backends = LocalBackends(llm_url, image_url, image_model)
         self.input_queue = queue.Queue()
         self.engine = None
         # Daemon so a slow image request can't keep the app alive after the window closes
@@ -53,7 +56,9 @@ class GameWorker(QObject):
             clear_cache=self.clear_cache,
             img2img=self.img2img,
             llm_url=self.backends.llm_url,
-            image_url=self.backends.image_url
+            image_url=self.backends.image_url,
+            image_model=self.backends.profile,
+            size=self.size
         )
         
         # HOOKS
@@ -62,6 +67,7 @@ class GameWorker(QObject):
         self.engine.custom_image = self.handle_image
         self.engine.status_callback = self.handle_status
         
+        self.model_chosen.emit(self.backends.profile)  # may differ from the request if this GPU can't run it
         self.status_updated.emit("Ready")
         self.engine.start()
 
@@ -86,17 +92,21 @@ class Backend(QObject):
     textChanged = Signal()
     imageChanged = Signal()
     statusChanged = Signal()
+    modelChanged = Signal()
 
-    def __init__(self, command, style=None, clear_cache=False, img2img=False, llm_url=None, image_url=None):
+    def __init__(self, command, style=None, clear_cache=False, img2img=False, llm_url=None, image_url=None,
+                 image_model=DEFAULT_PROFILE, size=(768, 576)):
         super().__init__()
         self._text = ""
         self._image = ""
         self._status = "Initializing..."
+        self._image_model = image_model
         
-        self.worker = GameWorker(command, style, clear_cache, img2img, llm_url, image_url)
+        self.worker = GameWorker(command, style, clear_cache, img2img, llm_url, image_url, image_model, size)
         self.worker.text_received.connect(self.append_text)
         self.worker.image_received.connect(self.update_image)
         self.worker.status_updated.connect(self.update_status)
+        self.worker.model_chosen.connect(self.update_model)
         self.worker.start()
 
     # --- PROPERTIES ---
@@ -108,6 +118,9 @@ class Backend(QObject):
 
     @Property(str, notify=statusChanged)
     def status_message(self): return self._status
+
+    @Property(str, notify=modelChanged)
+    def image_model(self): return self._image_model
 
     # --- SLOTS ---
     @Slot(str)
@@ -122,6 +135,10 @@ class Backend(QObject):
     def update_image(self, path):
         self._image = path
         self.imageChanged.emit()
+
+    def update_model(self, name):
+        self._image_model = name
+        self.modelChanged.emit()
 
     def update_status(self, msg):
         self._status = msg
@@ -145,7 +162,7 @@ def main():
     engine = QQmlApplicationEngine()
 
     backend = Backend(game_cmd, style=args.style, clear_cache=args.clear_cache, img2img=args.img2img,
-                      llm_url=args.llm_url, image_url=args.image_url)
+                      llm_url=args.llm_url, image_url=args.image_url, image_model=args.image_model, size=args.size)
     engine.rootContext().setContextProperty("backend", backend)
 
     qml_file = Path(__file__).parent / "ui/main.qml"
