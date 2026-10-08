@@ -98,16 +98,21 @@ def test_director_assesses_changes_in_the_current_place(server, reply, expected)
     living_room = Place("1", "Living Room", "Living Room", prompt="A living room with a rug.",
                         edits=[{"edit": "Drag the rug aside.", "target": "rug"}])
 
-    assert Director(url).assess(living_room, "The door reluctantly opens.", "open trap door") == expected
+    assert Director(url).assess(living_room, "The rug is moved aside, revealing a trap door.", "move rug") == expected
     content = json.loads(seen[0][2])["messages"][1]["content"]
     assert "THE PICTURE SHOWS: A living room with a rug.\nALREADY CHANGED (don't repeat these):\n- Drag the rug aside." in content
-    assert "THE PLAYER ACTED ON: trap door" in content
+    assert "THE PLAYER ACTED ON: rug" in content
 
 
 @pytest.mark.parametrize("command, reply, verdict", [
     ("take lamp", "Taken.", Verdict("remove", "lamp", "Remove the lamp.")),
     ("open the trophy case", "Opened.", Verdict("change", "trophy case", "Open the trophy case.")),
     ("put painting in case", "Done.", Verdict("change", "case", "Place the painting in the case.")),
+    ("open trap door", "The door reluctantly opens to reveal a rickety staircase descending into darkness.",
+     Verdict("change", "trap door", "Open the trap door, revealing a rickety staircase descending into darkness.")),
+    ("open window", "With great effort, you open the window far enough to allow entry.",
+     Verdict("change", "window", "Open the window.")),
+    ("open window", "The window is already open.", None),
     ("take all", "brass lantern: Taken.", None),
     ("take lamp", "You already have that!", None),
 ])
@@ -155,11 +160,41 @@ def test_director_designs_a_landmark_look_that_fits_mid_sentence(server):
     assert "LANDMARK: white house" in json.loads(seen[0][2])["messages"][1]["content"]
 
 
+def test_director_keeps_places_reached_from_underground_underground(server):
+    url, routes, _ = server
+    routes[("POST", "/v1/chat/completions")] = chat_reply({"setting": "outdoors", "prompt": "The edge of a deep chasm.",
+                                                           "landmarks": ["chasm"]})
+    cellar = Place("1", "Cellar", "Cellar", setting="underground")
+
+    described = Director(url).describe_place("East of Chasm", "You are on the east edge of a chasm.", came_from=cellar)
+
+    assert described.setting == "underground" and described.landmarks == {}  # and so no landmark either
+    assert Director(url).describe_place("Forest", "Sunlight falls through the trees.", came_from=cellar).setting == "outdoors"
+
+
+def test_director_drops_a_sentence_cut_off_by_the_length_limit(server):
+    url, routes, _ = server
+    long = "A small bloodstained room with a troll. " * 9 + "The troll is standing in the centre,"
+    routes[("POST", "/v1/chat/completions")] = chat_reply({"setting": "indoors", "prompt": long[:400], "landmarks": []})
+
+    assert Director(url).describe_place("The Troll Room", "The Troll Room").prompt.endswith("with a troll.")
+
+
+def test_director_falls_back_to_the_games_words(server):
+    url, routes, _ = server
+    routes[("POST", "/v1/chat/completions")] = chat_reply({"setting": "indoors", "prompt": "No doors. No windows.",
+                                                           "landmarks": []})
+
+    described = Director(url).describe_place("Maze", "Maze\nThis is part of a maze of twisty little passages, all alike.")
+    assert described.prompt == "This is part of a maze of twisty little passages, all alike."
+
+
 def test_director_survives_a_failing_server(server):
     url, routes, _ = server
     routes[("POST", "/v1/chat/completions")] = json_reply({"error": "boom"}, status=500)
 
-    assert Director(url).describe_place("Field", "You are in an open field.") is None
+    # Without the model, a place is still painted from the game's own words
+    assert Director(url).describe_place("Field", "You are in an open field.").prompt == "An open field."
     assert Director(url).locate("You are in an open field.") is None
 
 

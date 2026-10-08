@@ -47,7 +47,7 @@ def stub_ai(engine, tmp_path, changes=None, delay=None, visible=("rug", "lamp", 
     """No network: the director answers from `changes` ({command: Verdict}), finds only the `visible` things,
     and pictures are fake files."""
     changes = changes or {}
-    engine.director.describe_place = lambda name, text, known=(): Description(f"picture of {name}", {})
+    engine.director.describe_place = lambda name, text, known=(), came_from=None: Description(f"picture of {name}", {})
     engine.director.assess = lambda place, text, command: changes.get(command, NO_CHANGE)
     engine.director.locate = lambda text: None
     engine.director.find = lambda image, thing: Finding([[100, 200, 300, 400]], "wooden floor") if thing in visible else Finding([])
@@ -285,12 +285,12 @@ def test_landmarks_are_described_the_same_way_from_every_side(tmp_path):
     look = "a two-storey white clapboard farmhouse with a grey roof"
     seen = []
 
-    def describe(name, text, known=()):
+    def describe(name, text, known=(), came_from=None):
         seen.append(set(known))
         if name == "West of House":
             return Description("An open field near a white house with a boarded front door.", {"white house": look})
         if name == "Living Room":  # indoors, so the house's outside doesn't belong here
-            return Description("A living room in the white house.", {}, outdoors=False)
+            return Description("A living room in the white house.", {}, setting="indoors")
         return Description("A white house, all windows boarded up.", {})
 
     engine.director.describe_place = describe
@@ -317,6 +317,24 @@ def test_something_new_at_a_known_place_is_shown_but_not_kept(tmp_path):
                   ("west", MAZE_TEXT), ("east", "The Troll Room")])
 
     assert painter.edited == [("paint1.png", "Add a thief leaning on the wall.", [])]  # once, then remembered
-    assert [Path(p).name for p in shown] == ["paint1.png", "paint2.png", "edit1.png", "paint2.png", "edit1.png",
-                                              "paint2.png", "paint1.png"]
+    # The room shows at once, then the thief once he's painted in; the next time he's there, straight away
+    assert [Path(p).name for p in shown] == ["paint1.png", "paint2.png", "paint1.png", "edit1.png", "paint2.png",
+                                              "edit1.png", "paint2.png", "paint1.png"]
     assert Path(engine.world.current.image).name == "paint1.png"  # the thief was never part of the room itself
+
+
+def test_underground_places_are_painted_underground(tmp_path):
+    engine = PipeDream(["zork1.z3"], cache_dir=tmp_path)
+    painter = stub_ai(engine, tmp_path)
+    came_from = []
+
+    def describe(name, text, known=(), came_from_place=None):
+        came_from.append(came_from_place.name if came_from_place else None)
+        return Description(f"The edge of a chasm.", {}, setting="underground")
+
+    engine.director.describe_place = lambda name, text, known=(), came_from=None: describe(name, text, known, came_from)
+    feed(engine, [(None, LIVING_ROOM), ("down", DARK), ("turn on lamp", CELLAR),
+                  ("south", "East of Chasm\nYou are on the east edge of a chasm, the bottom of which cannot be seen.")])
+
+    assert came_from == [None, "Living Room", "Cellar"]  # the dark stretch doesn't lose track of where we were
+    assert painter.painted[-1] == "The edge of a chasm. Deep underground, enclosed by rough rock walls and ceiling."

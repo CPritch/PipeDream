@@ -59,9 +59,10 @@ def test_without_possessions():
 
 @pytest.mark.parametrize("prompt, cleaned", [
     ("Open field west of white house with boarded front door. Small mailbox nearby. North: path to house. "
-     "South: no visible path.", "Open field near white house with boarded front door. Small mailbox nearby."),
+     "South: no visible path.", "Open field near white house with front door with wooden planks nailed across. "
+     "Small mailbox nearby."),
     ("A white house with boarded windows. A narrow path winds north through trees. No door visible.",
-     "A white house with boarded windows. A narrow path winds through trees."),
+     "A white house with windows with wooden planks nailed across. A narrow path winds through trees."),
     ("Dusty trap door lies beneath the rug. Exit: north to the rug's original position.",
      "Dusty trap door lies beneath the rug."),
     ("Small room with east and south passages, and a dark hole west.", "Small room with passages, and a dark hole."),
@@ -75,7 +76,7 @@ def test_without_possessions():
     ("A wooden door is nailed shut to the west. A doorway is to the east.", "A wooden door is nailed shut."),
     ("The paper is not legible.", ""),
     ("A white house with boarded-up windows, facing north. A narrow path.",
-     "A white house with boarded-up windows. A narrow path."),
+     "A white house with windows with wooden planks nailed across. A narrow path."),
     ("Behind House: A path leads into the forest.", "A path leads into the forest."),
     ("A living room with a rug. Outdoors: true. Landmarks: white house.", "A living room with a rug."),
     ("A large room with a narrow passage running from east to west and a stone stairway.",
