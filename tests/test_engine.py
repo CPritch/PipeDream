@@ -6,8 +6,9 @@ from pathlib import Path
 import pytest
 
 from pipedream import games
-from pipedream.director import NO_CHANGE, Finding, Verdict
+from pipedream.director import NO_CHANGE, Description, Finding, Verdict
 from pipedream.engine import PipeDream, session_name
+from pipedream.world import World
 
 MOCK_GAME = Path(games.__file__).parent / "mock_game.py"
 
@@ -29,7 +30,7 @@ class FakePainter:
         self.painted.append(prompt)
         return self._file(f"paint{len(self.painted)}")
 
-    def edit(self, image, instruction, boxes=(), min_change=None):
+    def edit(self, image, instruction, boxes=(), min_change=None, attempts=1):
         self.edited.append((Path(image).name, instruction, boxes))
         return None if "nothing" in instruction else self._file(f"edit{len(self.edited)}")
 
@@ -46,10 +47,10 @@ def stub_ai(engine, tmp_path, changes=None, delay=None, visible=("rug", "lamp", 
     """No network: the director answers from `changes` ({command: Verdict}), finds only the `visible` things,
     and pictures are fake files."""
     changes = changes or {}
-    engine.director.describe_place = lambda name, text: f"picture of {name}"
+    engine.director.describe_place = lambda name, text, known=(): Description(f"picture of {name}", {})
     engine.director.assess = lambda place, text, command: changes.get(command, NO_CHANGE)
     engine.director.locate = lambda text: None
-    engine.director.find = lambda image, thing: Finding([[100, 200, 300, 400]], "bare floor") if thing in visible else Finding([])
+    engine.director.find = lambda image, thing: Finding([[100, 200, 300, 400]], "wooden floor") if thing in visible else Finding([])
     engine.painter = FakePainter(tmp_path, delay)
     return engine.painter
 
@@ -146,6 +147,7 @@ LIVING_ROOM = ("Living Room\nYou are in the living room. There is a doorway to t
                "rug in the center of the room.")
 DARK = ("You have moved into a dark place.\nThe trap door crashes shut, and you hear someone barring it.\n\n"
         "It is pitch black. You are likely to be eaten by a grue.")
+MAZE_TEXT = "Maze\nThis is part of a maze of twisty little passages, all alike."
 CELLAR = ("The brass lantern is now on.\n\nCellar\nYou are in a dark and damp cellar with a narrow passageway "
           "leading north, and a crawlway to the south. On the west is the bottom of a steep metal ramp which is "
           "unclimbable.")
@@ -182,22 +184,25 @@ def test_changes_in_a_place_edit_its_picture(tmp_path):
         "take lamp": Verdict("remove", "lamp", "Remove the lamp."),
         "take leaflet": Verdict("remove", "leaflet", "Remove the leaflet."),  # never painted, so nothing to remove
         "move rug": Verdict("change", "rug", "Drag the rug aside, revealing a trap door."),
-        "open trap door": Verdict("change", "trap door", "Open the trap door."),  # not found: edit the whole picture
-        "wave": Verdict("change", "", "Change nothing at all."),  # an edit that makes no difference isn't kept
+        "open trap door": Verdict("change", "trap door", "Open the trap door."),  # not in the picture: left alone
+        "drop sword": Verdict("add", "", "Place a sword on the floor."),  # an addition can go anywhere
+        "wave": Verdict("add", "", "Change nothing at all."),  # an edit that makes no difference isn't kept
     })
     shown = []
     engine.custom_image = shown.append
 
     feed(engine, [(None, LIVING_ROOM), ("take lamp", "Taken."), ("take leaflet", "Taken."), ("move rug", "With a "
           "great effort, the rug is moved to one side of the room, revealing the dusty cover of a closed trap door."),
-          ("open trap door", "The door reluctantly opens."), ("wave", "You wave."), ("look", LIVING_ROOM)])
+          ("open trap door", "The door reluctantly opens."), ("drop sword", "Dropped."), ("wave", "You wave."),
+          ("look", LIVING_ROOM)])
 
-    assert painter.edited == [("paint1.png", "Remove the lamp, leaving bare floor in its place.", [[100, 200, 300, 400]]),
-                              ("edit1.png", "Drag the rug aside, revealing a trap door.", [[100, 200, 300, 400]]),
-                              ("edit2.png", "Open the trap door.", []),
-                              ("edit3.png", "Change nothing at all.", [])]
+    assert painter.edited == [
+        ("paint1.png", "Remove the lamp, leaving only bare wooden floor where it was.", [[100, 200, 300, 400]]),
+        ("edit1.png", "Drag the rug aside, revealing a trap door.", [[100, 200, 300, 400]]),
+        ("edit2.png", "Place a sword on the floor.", []),
+        ("edit3.png", "Change nothing at all.", [])]
     living_room = engine.world.current
-    assert [e["target"] for e in living_room.edits] == ["lamp", "rug", "trap door"]
+    assert [e["target"] for e in living_room.edits] == ["lamp", "rug", "sword"]
     assert Path(living_room.image).name == "edit3.png"
     assert [Path(p).name for p in shown] == ["paint1.png", "edit1.png", "edit2.png", "edit3.png", "edit3.png"]
 
@@ -272,3 +277,46 @@ def test_slow_images_never_block_the_game_or_show_stale_scenes(demo_argv, tmp_pa
     # and the forest the player only passed through isn't painted until they return
     assert [Path(p).name for p in shown] == ["paint1.png"]
     assert engine.painter.painted == ["picture of Open Field"]
+
+
+def test_landmarks_are_described_the_same_way_from_every_side(tmp_path):
+    engine = PipeDream(["zork1.z3"], cache_dir=tmp_path)
+    painter = stub_ai(engine, tmp_path)
+    look = "a two-storey white clapboard farmhouse with a grey roof"
+    seen = []
+
+    def describe(name, text, known=()):
+        seen.append(set(known))
+        if name == "West of House":
+            return Description("An open field near a white house with a boarded front door.", {"white house": look})
+        if name == "Living Room":  # indoors, so the house's outside doesn't belong here
+            return Description("A living room in the white house.", {}, outdoors=False)
+        return Description("A white house, all windows boarded up.", {})
+
+    engine.director.describe_place = describe
+    feed(engine, [(None, WEST_OF_HOUSE), ("north", NORTH_OF_HOUSE), ("west", LIVING_ROOM)])
+
+    assert painter.painted == [f"An open field near {look} with a boarded front door.",
+                               "A two-storey white clapboard farmhouse with a grey roof, all windows boarded up.",
+                               "A living room in the white house."]
+    assert seen == [set(), {"white house"}, {"white house"}]
+    assert World(engine.world.folder).landmarks == {"white house": look}
+
+
+def test_something_new_at_a_known_place_is_shown_but_not_kept(tmp_path):
+    engine = PipeDream(["zork1.z3"], cache_dir=tmp_path)
+    thief = "Someone carrying a large bag is casually leaning against one of the walls here."
+    painter = stub_ai(engine, tmp_path, changes={"(comes back here)": Verdict("add", "", "Add a thief leaning on the wall.")})
+    shown = []
+    engine.custom_image = shown.append
+    troll_room = ("The Troll Room\nThis is a small room with passages to the east and south and a forbidding hole "
+                  "leading west. Bloodstains and deep scratches (perhaps made by an axe) mar the walls.")
+
+    feed(engine, [(None, troll_room), ("west", MAZE_TEXT), ("east", f"The Troll Room\n{thief}"), ("west", MAZE_TEXT),
+                  ("east", f"The Troll Room\n{thief}\nYour sword has begun to glow very brightly."),
+                  ("west", MAZE_TEXT), ("east", "The Troll Room")])
+
+    assert painter.edited == [("paint1.png", "Add a thief leaning on the wall.", [])]  # once, then remembered
+    assert [Path(p).name for p in shown] == ["paint1.png", "paint2.png", "edit1.png", "paint2.png", "edit1.png",
+                                              "paint2.png", "paint1.png"]
+    assert Path(engine.world.current.image).name == "paint1.png"  # the thief was never part of the room itself

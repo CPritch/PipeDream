@@ -11,7 +11,7 @@ import zipfile
 import pytest
 
 from pipedream import runtime
-from pipedream.director import Director, Finding, Verdict, obvious_verdict
+from pipedream.director import Description, Director, Finding, Verdict, obvious_verdict
 from pipedream.imagegen import ImageGenerator, Painter, changed, darkness_png, mask_png
 from pipedream.world import Place
 
@@ -59,14 +59,30 @@ def chat_reply(scene):
 
 def test_director_describes_a_new_place_without_directions(server):
     url, routes, seen = server
-    routes[("POST", "/v1/chat/completions")] = chat_reply({"prompt": "An open field before a white house. Exits: north."})
+    routes[("POST", "/v1/chat/completions")] = chat_reply({"prompt": "An open field before a white house. Exits: north.",
+                                                           "landmarks": []})
 
-    prompt = Director(url).describe_place("West of House", "West of House\nYou are in an open field.")
+    described = Director(url).describe_place("West of House", "West of House\nYou are in an open field.")
 
-    assert prompt == "An open field before a white house."
+    assert described == Description("An open field before a white house.", {})
     request = json.loads(seen[0][2])
     assert request["response_format"]["type"] == "json_schema"
     assert "West of House" in request["messages"][1]["content"]
+
+
+def test_director_keeps_only_new_landmarks_the_game_mentions(server):
+    url, routes, seen = server
+    # "red tower" isn't in the game's text (made up), and the old mill is already known
+    routes[("POST", "/v1/chat/completions")] = chat_reply({"prompt": "A field by a white house and a red tower.",
+                                                           "landmarks": ["White House", "red tower", "old mill"]})
+    director = Director(url)
+    designed = []
+    director.design_landmark = lambda name, text: designed.append(name) or "a white clapboard farmhouse"
+
+    described = director.describe_place("West of House", "You are west of a white house near an old mill.", {"old mill"})
+
+    assert described.landmarks == {"white house": "a white clapboard farmhouse"} and designed == ["white house"]
+    assert "old mill" not in json.loads(seen[0][2])["messages"][1]["content"].replace("near an old mill", "")
 
 
 @pytest.mark.parametrize("reply, expected", [
@@ -103,11 +119,11 @@ def test_director_finds_things_in_the_picture(server, tmp_path):
     url, routes, seen = server
     picture = tmp_path / "room.png"
     picture.write_bytes(b"PNG")
-    reply = '{"bbox_2d": [252, 276, 370, 603], "behind": "bare wooden floor"}\n{"bbox_2d": [5, 5, 3, 3]}'
+    reply = '{"bbox_2d": [252, 276, 370, 603], "surface": "wooden floor"}\n{"bbox_2d": [5, 5, 3, 3]}'
     routes[("POST", "/v1/chat/completions")] = json_reply({"choices": [{"message": {"content": reply}}]})
 
     # The malformed second box is dropped
-    assert Director(url).find(str(picture), "brass lantern") == Finding([[252, 276, 370, 603]], "bare wooden floor")
+    assert Director(url).find(str(picture), "brass lantern") == Finding([[252, 276, 370, 603]], "wooden floor")
     image = json.loads(seen[0][2])["messages"][0]["content"][0]["image_url"]["url"]
     assert image == "data:image/png;base64," + base64.b64encode(b"PNG").decode()
 
@@ -128,7 +144,15 @@ def test_director_keeps_the_complete_sentences_of_a_cut_off_reply(server):
     cut_off = '{"prompt": "A dark and damp cellar. A steep metal ramp rises from the floor. Water drips from the'
     routes[("POST", "/v1/chat/completions")] = json_reply({"choices": [{"message": {"content": cut_off}}]})
 
-    assert Director(url).describe_place("Cellar", "Cellar") == "A dark and damp cellar. A steep metal ramp rises from the floor."
+    assert Director(url).describe_place("Cellar", "Cellar").prompt == "A dark and damp cellar. A steep metal ramp rises from the floor."
+
+
+def test_director_designs_a_landmark_look_that_fits_mid_sentence(server):
+    url, routes, seen = server
+    routes[("POST", "/v1/chat/completions")] = chat_reply({"look": "A squat white house with a stone base and slate roof."})
+
+    assert Director(url).design_landmark("white house", "west of a white house") == "a squat white house with a stone base and slate roof"
+    assert "LANDMARK: white house" in json.loads(seen[0][2])["messages"][1]["content"]
 
 
 def test_director_survives_a_failing_server(server):
@@ -205,7 +229,23 @@ def test_painter_edits_keep_the_style_and_only_repaint_the_boxes(tmp_path):
     assert call["prompt"] == "Ink. Remove the lamp. Keep everything else exactly the same."
     assert call["refs"] == [str(base)] and call["init"] == str(base) and call["seed"] == 7
     assert call["mask"] == mask_png(64, 48, [lamp])
-    assert open(edited, "rb").read() == png_of(100, box=lamp, inner=20)
+    from PySide6.QtGui import QImage
+    result = QImage(edited)
+    assert abs(result.pixelColor(24, 18).value() - 20) <= 4  # the middle of the box comes from the edit
+    assert result.pixelColor(62, 46).value() == 100  # far from it, the original is kept
+
+
+def test_pasting_keeps_the_original_outside_the_boxes(tmp_path):
+    from PySide6.QtGui import QImage
+    from pipedream.imagegen import paste
+    base = tmp_path / "base.png"
+    base.write_bytes(png_of(100, 480, 360))
+    # The model's output: the box repainted, and everything else drifted slightly
+    edited = png_of(97, 480, 360, box=[250, 250, 500, 500], inner=20)
+    pasted = QImage.fromData(paste(str(base), edited, [[250, 250, 500, 500]]))
+
+    assert pasted.pixelColor(180, 135).value() == 20
+    assert all(pasted.pixelColor(x, y).value() == 100 for x, y in ((0, 0), (479, 359), (400, 40), (40, 300)))
 
 
 def test_painter_retries_an_edit_that_changed_nothing(tmp_path):
@@ -213,7 +253,7 @@ def test_painter_retries_an_edit_that_changed_nothing(tmp_path):
     base.write_bytes(png_of(100))
     generator = FakeGenerator([png_of(104), png_of(100, box=[0, 0, 500, 500], inner=200)])
 
-    edited = Painter(generator, str(tmp_path), "Ink", seed=7).edit(str(base), "Open the window.")
+    edited = Painter(generator, str(tmp_path), "Ink", seed=7).edit(str(base), "Open the window.", attempts=2)
 
     assert [c["seed"] for c in generator.calls] == [7, 8] and generator.calls[0]["mask"] is None
     assert open(edited, "rb").read() == png_of(100, box=[0, 0, 500, 500], inner=200)
@@ -226,7 +266,7 @@ def test_painter_gives_up_on_an_edit_that_never_shows(tmp_path):
     # A removal that repaints the lamp in place changes its box a little, which isn't enough
     generator = FakeGenerator([png_of(100, box=lamp, inner=140), png_of(100, box=lamp, inner=60)])
 
-    assert Painter(generator, str(tmp_path), "Ink").edit(str(base), "Remove the lamp.", [lamp], min_change=80) is None
+    assert Painter(generator, str(tmp_path), "Ink").edit(str(base), "Remove the lamp.", [lamp], min_change=80, attempts=2) is None
     assert len(generator.calls) == 2
 
 

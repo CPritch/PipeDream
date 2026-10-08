@@ -1,6 +1,6 @@
 import pytest
 
-from pipedream.gametext import (clean_prompt, command_object, find_title, from_title, has_no_visible_effect, is_dark, unwrap,
+from pipedream.gametext import (apply_landmarks, clean_prompt, command_object, find_title, from_title, has_no_visible_effect, is_dark, unwrap,
                                 without_possessions)
 
 
@@ -77,6 +77,7 @@ def test_without_possessions():
     ("A white house with boarded-up windows, facing north. A narrow path.",
      "A white house with boarded-up windows. A narrow path."),
     ("Behind House: A path leads into the forest.", "A path leads into the forest."),
+    ("A living room with a rug. Outdoors: true. Landmarks: white house.", "A living room with a rug."),
     ("A large room with a narrow passage running from east to west and a stone stairway.",
      "A large room with a narrow passage and a stone stairway."),
     ("Bloodstained walls, and a forbidding hole leading west.", "Bloodstained walls."),
@@ -99,3 +100,13 @@ def test_has_no_visible_effect(command, titled, expected):
 ])
 def test_command_object(command, thing):
     assert command_object(command) == thing
+
+
+@pytest.mark.parametrize("prompt, described", [
+    ("A white house, all windows boarded.", "A two-storey farmhouse with a grey roof, all windows boarded."),
+    ("Behind the white house, a path.", "Behind the two-storey farmhouse with a grey roof, a path."),
+    ("White house with boarded windows.", "Two-storey farmhouse with a grey roof with boarded windows."),
+    ("A dark forest.", "A dark forest."),
+])
+def test_apply_landmarks(prompt, described):
+    assert apply_landmarks(prompt, {"white house": "a two-storey farmhouse with a grey roof"}) == described
