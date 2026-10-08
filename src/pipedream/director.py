@@ -1,9 +1,6 @@
 import os
 import warnings
 from litellm import completion, completion_cost
-from dotenv import load_dotenv
-
-load_dotenv()
 
 warnings.filterwarnings("ignore", category=UserWarning, module="pydantic")
 

@@ -1,11 +1,18 @@
 import uuid
 import json
 import os
+from pipedream.cache import DEFAULT_CACHE_DIR
+
+# Edge name for the game's opening scene, which no command leads to
+START_COMMAND = "<start>"
 
 class Navigator:
-    def __init__(self, session_id="default", cache_dir="cache"):
+    def __init__(self, session_id="default", cache_dir=None):
+        cache_dir = cache_dir or DEFAULT_CACHE_DIR
+        os.makedirs(cache_dir, exist_ok=True)
         self.graph_file = os.path.join(cache_dir, f"world_graph_{session_id}.json")
         self.nodes = {}  # { uuid: { image_path: str, edges: { cmd: uuid } } }
+        self.genesis_id = None
         self.current_node_id = None
         self.last_command = None
         
@@ -24,6 +31,7 @@ class Navigator:
 
     def reset(self):
         self.nodes = {}
+        self.genesis_id = None
         self.current_node_id = None
         self._create_genesis_node()
         print("[Navigator] Graph reset.")
@@ -35,6 +43,7 @@ class Navigator:
             "image_path": None,
             "edges": {}
         }
+        self.genesis_id = node_id
         self.current_node_id = node_id
         self.save_graph()
 
@@ -53,7 +62,7 @@ class Navigator:
             return self.nodes[self.current_node_id].get("image_path")
 
         current_node = self.nodes[self.current_node_id]
-        cmd = self.last_command
+        cmd = self.last_command if self.last_command is not None else START_COMMAND
 
         # If we recognize the room from the cache, find its exact node in the graph.
         if pre_cached_image:
@@ -127,13 +136,17 @@ class Navigator:
                 with open(self.graph_file, 'r') as f:
                     data = json.load(f)
                     self.nodes = data.get("nodes", {})
-                    self.current_node_id = None
+                    # Every run starts at the same genesis node, so the game's opening scene stays linked
+                    if data.get("genesis_id") in self.nodes:
+                        self.genesis_id = data["genesis_id"]
+                        self.current_node_id = self.genesis_id
             except Exception as e:
                 print(f"[!] Error loading graph: {e}")
 
     def save_graph(self):
         data = {
             "nodes": self.nodes,
+            "genesis_id": self.genesis_id,
             "current_node_id": self.current_node_id
         }
         with open(self.graph_file, 'w') as f:

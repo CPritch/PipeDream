@@ -3,15 +3,18 @@ import os
 import queue
 import argparse
 import signal
+import threading
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Signal, Slot, Property, QThread
+from dotenv import load_dotenv, find_dotenv
+from PySide6.QtCore import QObject, Signal, Slot, Property
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
 
+from pipedream import __version__
 from pipedream.engine import PipeDream
 
-class GameWorker(QThread):
+class GameWorker(QObject):
     text_received = Signal(str)
     image_received = Signal(str)
     cost_updated = Signal(float)
@@ -25,6 +28,17 @@ class GameWorker(QThread):
         self.img2img = img2img
         self.input_queue = queue.Queue()
         self.engine = None
+        # Daemon so a slow image request can't keep the app alive after the window closes
+        self.thread = threading.Thread(target=self.run, daemon=True)
+
+    def start(self):
+        self.thread.start()
+
+    def stop(self, timeout=2.0):
+        self.input_queue.put(None)  # unblocks handle_input; the engine treats None as "stop"
+        if self.engine:
+            self.engine.cleanup()
+        self.thread.join(timeout)
 
     def run(self):
         self.engine = PipeDream(
@@ -126,16 +140,15 @@ class Backend(QObject):
         self.statusChanged.emit()
 
     def shutdown(self):
-        if self.worker.engine:
-            self.worker.engine.cleanup()
-        self.worker.quit()
-        self.worker.wait()
+        self.worker.stop()
 
 def main():
     signal.signal(signal.SIGINT, signal.SIG_DFL)
+    load_dotenv(find_dotenv(usecwd=True))
 
     parser = argparse.ArgumentParser(description="PipeDream GUI")
     
+    parser.add_argument('--version', action='version', version=f"%(prog)s {__version__}")
     parser.add_argument('--art-style', dest='style', type=str, default=None, help="Visual style prompt")
     parser.add_argument('--clear-cache', action='store_true', help="Clear image cache")
     parser.add_argument('--img2img', action='store_true', help="Enable image-to-image generation for visual consistency")
@@ -145,9 +158,9 @@ def main():
 
     if not args.game_command:
         print("[*] No game specified. Launching internal demo...")
-        game_cmd = f"{sys.executable} -m pipedream.games.mock_game" 
+        game_cmd = [sys.executable, "-m", "pipedream.games.mock_game"]
     else:
-        game_cmd = " ".join(args.game_command)
+        game_cmd = args.game_command
 
     app = QGuiApplication(sys.argv)
     engine = QQmlApplicationEngine()

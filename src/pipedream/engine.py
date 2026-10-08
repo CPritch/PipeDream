@@ -1,7 +1,10 @@
 import re
 import sys
+import shlex
 import argparse
 import pexpect
+from dotenv import load_dotenv, find_dotenv
+from pipedream import __version__
 from pipedream.director import Director
 from pipedream.cache import SmartCache
 from pipedream.navigator import Navigator
@@ -10,21 +13,23 @@ if sys.platform == 'win32':
     from pexpect.popen_spawn import PopenSpawn
 
 class PipeDream:
-    def __init__(self, command, style=None, clear_cache=False, img2img=False):
-        self.command = command
+    def __init__(self, command, style=None, clear_cache=False, img2img=False, cache_dir=None):
+        # Keep the argv list intact so paths with spaces survive the trip to pexpect
+        self.argv = shlex.split(command) if isinstance(command, str) else list(command)
+        self.command = shlex.join(self.argv)
         self.process = None
         self.prompt_pattern = r'[>:]\s*$' 
         self.last_input = None
         self.previous_text = ""
 
-        safe_cmd = re.sub(r'[^a-zA-Z0-9]', '_', command.strip().lower())
+        safe_cmd = re.sub(r'[^a-zA-Z0-9]', '_', self.command.strip().lower())
         safe_style = re.sub(r'[^a-zA-Z0-9]', '_', str(style).strip().lower())[:20] 
         self.session_id = f"{safe_cmd}_{safe_style}"
         self.img2img = img2img
 
         self.director = Director(self, style_prompt=style, img2img=self.img2img)
-        self.cache = SmartCache(self, session_id=self.session_id, style_prompt=style, img2img=self.img2img)
-        self.navigator = Navigator(session_id=self.session_id)
+        self.cache = SmartCache(self, session_id=self.session_id, style_prompt=style, img2img=self.img2img, cache_dir=cache_dir)
+        self.navigator = Navigator(session_id=self.session_id, cache_dir=cache_dir)
 
         if clear_cache:
             self.cache.clear()
@@ -33,6 +38,8 @@ class PipeDream:
         self.custom_print = print
         self.custom_input = input
         self.custom_image = self.default_image_handler
+        self.cost_callback = None
+        self.status_callback = None
 
     def safe_print(self, text):
         """Wrapper to ensure we call the latest custom_print"""
@@ -56,15 +63,19 @@ class PipeDream:
         self.custom_print(f"[*] Launching: {self.command}")
         
         if sys.platform == 'win32':
-            self.process = PopenSpawn(self.command, encoding='utf-8')
+            self.process = PopenSpawn(self.argv, encoding='utf-8')
         else:
-            self.process = pexpect.spawn(self.command, encoding='utf-8')
+            self.process = pexpect.spawn(self.argv[0], self.argv[1:], encoding='utf-8')
             
         try:
             self.read_until_prompt()
             
             while True:
                 user_input = self.custom_input("USER > ") 
+
+                # None is the front-end asking us to stop (e.g. the window closed)
+                if user_input is None:
+                    break
 
                 self.last_input = user_input.strip()
                 self.navigator.set_last_command(user_input)
@@ -118,7 +129,7 @@ class PipeDream:
         lines = text.splitlines()
         
         # Remove the echoed command (if present)
-        if self.last_input and lines and self.last_input in lines[0]:
+        if self.last_input and lines and lines[0].strip() == self.last_input:
             return "\n".join(lines[1:]).strip()
             
         return text.strip()
@@ -153,12 +164,6 @@ class PipeDream:
             pre_cached_image=cached_img
         )
 
-        image_path = self.navigator.process_move(
-            visual_prompt, 
-            self.cache.generate, 
-            text
-        )
-
         if image_path:
             print(f"   > Image ready.")
             self.custom_image(image_path)
@@ -166,8 +171,11 @@ class PipeDream:
         self.previous_text = text
 
 def main():
+    load_dotenv(find_dotenv(usecwd=True))
+
     parser = argparse.ArgumentParser(description="PipeDream: AI Visualizer for Interactive Fiction")
     
+    parser.add_argument('--version', action='version', version=f"%(prog)s {__version__}")
     parser.add_argument('--art-style', dest='style', type=str, default=None, help="Visual style prompt")
     parser.add_argument('--clear-cache', action='store_true', help="Wipe cache before starting")
     parser.add_argument('--img2img', action='store_true', help="Enable image-to-image generation")
@@ -178,8 +186,7 @@ def main():
         parser.print_help()
         sys.exit(1)
 
-    full_command = " ".join(args.game_command)
-    engine = PipeDream(full_command, style=args.style, clear_cache=args.clear_cache, img2img=args.img2img)
+    engine = PipeDream(args.game_command, style=args.style, clear_cache=args.clear_cache, img2img=args.img2img)
     engine.start()
 
 if __name__ == "__main__":

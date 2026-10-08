@@ -4,15 +4,17 @@ import json
 import hashlib
 import shutil
 import requests
+import platformdirs
 from litellm import completion, image_generation, completion_cost
 from litellm.exceptions import RateLimitError, AuthenticationError
-from dotenv import load_dotenv
 
-load_dotenv(override=True)
+# e.g. ~/.cache/pipedream on Linux, rather than wherever the user launched from
+DEFAULT_CACHE_DIR = platformdirs.user_cache_dir("pipedream", appauthor=False)
 
 class SmartCache:
-    def __init__(self, engine, session_id="default", style_prompt=None, cache_dir="cache", img2img=False):
+    def __init__(self, engine, session_id="default", style_prompt=None, cache_dir=None, img2img=False):
         self.engine = engine
+        cache_dir = cache_dir or DEFAULT_CACHE_DIR
         self.cache_dir = cache_dir
         self.img2img = img2img
         self.images_dir = os.path.join(cache_dir, f"images_{session_id}")
