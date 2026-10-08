@@ -30,17 +30,17 @@ The first launch downloads the AI models and the local inference servers into yo
 * Tested on Linux x86_64. Windows (Vulkan) and Apple Silicon (Metal) builds are wired up but not yet tested.
 * If you have a second GPU (e.g. a laptop's integrated graphics), the scene-analysis model runs there; otherwise it runs on the CPU.
 
-The game never waits for a picture: you can keep typing while one paints, and pictures for scenes you've already left are skipped. On an RTX 5060 Laptop GPU, a new scene appears about 4.5 s after you press Enter with the default model (about 2 s to analyse, 2 s to paint).
+The game never waits for a picture: you can keep typing while one paints, and pictures for scenes you've already left are skipped. On an RTX 5060 Laptop GPU with the default model, a new place appears about 4.5 s after you press Enter (about 2 s to read the scene, 2 s to paint it), a change to the current place about 5.5 s, and a place you've seen before instantly.
 
 ### Image models
 
 Pick one with `--image-model` and set the size with `--size` (default `768x576`). Painting time per scene on an RTX 5060 Laptop GPU:
 
-| `--image-model` | Look | CUDA | Vulkan | Licence |
-|---|---|---|---|---|
-| `mage-flow` (default) | Oil-painterly, very faithful to the scene | ~1.8 s | not yet* | MIT |
-| `flux2-klein` | Vivid digital painting | ~4.4 s | ~6.3 s | Apache 2.0 |
-| `qwen-image` | Darkest and moodiest | ~12 s | ~17 s | Non-commercial |
+| `--image-model` | Look | CUDA | Vulkan | Edits changes | Licence |
+|---|---|---|---|---|---|
+| `mage-flow` (default) | Oil-painterly, very faithful to the scene | ~1.8 s | not yet* | yes, ~4 s | MIT |
+| `flux2-klein` | Vivid digital painting | ~4.4 s | ~6.3 s | yes | Apache 2.0 |
+| `qwen-image` | Darkest and moodiest | ~12 s | ~17 s | no | Non-commercial |
 
 \* stable-diffusion.cpp's Vulkan backend currently renders Mage-Flow as noise, so PipeDream needs a CUDA build of `sd-server` for it (see `PIPEDREAM_SD_SERVER` below). Without one it falls back to `flux2-klein` and says so. The bundled servers are Vulkan builds.
 
@@ -84,11 +84,10 @@ pipedream-gui frotz games/zork1.z5
 ## Features
 
 * **Universal Compatibility:** Works with Python scripts, binaries, and interpreters (Frotz, Glulxe).
-* **State-Aware Navigator:** A graph-based system tracks movement. If you leave a room and come back, PipeDream restores the previous image.
-* **Fully Local:** Scenes are painted by Microsoft's [Mage-Flow Turbo](https://github.com/microsoft/Mage) via [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp), and analysed via [llama.cpp](https://github.com/ggml-org/llama.cpp) by the same Qwen3-VL model the image model uses as its text encoder.
-* **Smart Cache (v0.3.0):** If you backtrack to a previously visited room, PipeDream bypasses the LLM analysis entirely and instantly loads the cached image.
-* **Image-to-Image Consistency (v0.3.0):** An optional mode that uses the previous scene as a structural guide to maintain lighting, style, and architectural consistency as you move between rooms.
-* **Spatial Awareness (v0.3.0):** The AI director maps physical paths and exits to their cardinal directions so the generated rooms accurately reflect the game's geography.
+* **Remembers the World:** Places are recognised by the room titles games print (or named by the AI director in games without them), never by guessing where a direction leads. Come back by any route, even a one-way chimney, and you see the same picture.
+* **Pictures Follow the Story:** Open a window, move a rug or defeat a troll, and the place's picture is edited to match instead of being painted from scratch. When the lights go out, the picture goes dark.
+* **Repaint:** If a picture comes out wrong, the Repaint button (or Ctrl+R) paints that place again, keeping any changes the story has made to it.
+* **Fully Local:** Scenes are painted by Microsoft's [Mage-Flow Edit Turbo](https://github.com/microsoft/Mage) via [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp), and read via [llama.cpp](https://github.com/ggml-org/llama.cpp) by the same Qwen3-VL model the image model uses as its text encoder.
 * **Graceful Shutdown:** Safely handles terminal interrupts (CTRL+C) and window closures without leaving zombie processes behind.
 
 ### Customizing Styles
@@ -103,17 +102,9 @@ pipedream-gui --art-style "Retro 8-bit pixel art, green monochrome" adventure
 pipedream-gui --art-style "Rough pencil sketch on parchment" adventure
 ```
 
-### Visual Consistency (Image-to-Image)
-
-To create a more cohesive visual journey where rooms visually morph into one another rather than generating from scratch, enable the img2img pipeline:
-
-```bash
-pipedream-gui --img2img adventure
-```
-
 ### Cache Management
 
-PipeDream caches aggressively to save time. Cache data is namespaced by your game command and art style, and lives in your user cache folder (`~/.cache/pipedream` on Linux, `~/Library/Caches/pipedream` on macOS, `%LOCALAPPDATA%\pipedream\Cache` on Windows). To wipe the world map and start fresh for a specific game:
+PipeDream remembers every place and picture, per game and art style, in your user cache folder (`~/.cache/pipedream` on Linux, `~/Library/Caches/pipedream` on macOS, `%LOCALAPPDATA%\pipedream\Cache` on Windows). To wipe the world map and start fresh for a specific game:
 
 ```bash
 # Note: Ensure the flag comes before the game command
@@ -151,6 +142,7 @@ Environment overrides:
 
 * `PIPEDREAM_SD_SERVER` / `PIPEDREAM_LLAMA_SERVER`: use your own server binaries, e.g. a CUDA build of stable-diffusion.cpp, which Mage-Flow needs for now and which is about 30% faster than Vulkan on NVIDIA (`cmake -B build -DSD_CUDA=ON && cmake --build build`).
 * `PIPEDREAM_LLM_DEVICE`: the ggml device for the scene-analysis model (`Vulkan1`, `CUDA0`, or `none` for CPU).
+* `PIPEDREAM_SEED`: a fixed image seed, so replaying the same game paints comparable pictures.
 
 ## Troubleshooting
 
