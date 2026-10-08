@@ -2,38 +2,35 @@
 
 PipeDream is a utility that adds a visual dimension to text-based interactive fiction. It operates by capturing the standard output of terminal games and generating real-time illustrations of the current scene using generative AI.
 
+Everything runs locally on your own machine: no API keys, no accounts, no per-image costs.
+
 ![Alt text](/screenshots/screenshot-1.png?raw=true "Example run of adventure game.")
 
-## Quick Start (30 Seconds)
+## Quick Start
 
 Experience the visualization immediately with the built-in demo cartridge.
 
 **1. Install**
 ```bash
 pip install pipedream-fiction
-
 ```
 
-**2. Get an API Key**
-You need a Gemini API key for the image generation (Free tier available).
-
-* Get one here: [Google AI Studio](https://aistudio.google.com/app/apikey)
-* Set it in your terminal:
-
-```bash
-# Linux / macOS
-export GEMINI_API_KEY="AISaSy..."
-
-# Windows (PowerShell)
-$env:GEMINI_API_KEY="AISaSy..."
-```
-
-**3. Run the Demo**
+**2. Run the Demo**
 Launch the GUI without arguments to play the internal mock game.
 
 ```bash
 pipedream-gui
 ```
+
+The first launch downloads the AI models (about 11 GB) and the local inference servers into your user data folder (`~/.local/share/pipedream` on Linux). Every download is checked against a pinned SHA-256, and an interrupted download resumes where it left off.
+
+### Requirements
+
+* A GPU with **8 GB of VRAM** and Vulkan drivers (NVIDIA, AMD or Intel), and 16 GB of RAM (recommended).
+* Tested on Linux x86_64. Windows (Vulkan) and Apple Silicon (Metal) builds are wired up but not yet tested.
+* If you have a second GPU (e.g. a laptop's integrated graphics), the scene-analysis model runs there; otherwise it runs on the CPU.
+
+On an RTX 5060 Laptop GPU a new scene takes about 4 s to analyse and about 17 s to paint at 768×576.
 
 ---
 
@@ -72,7 +69,8 @@ pipedream-gui frotz games/zork1.z5
 
 * **Universal Compatibility:** Works with Python scripts, binaries, and interpreters (Frotz, Glulxe).
 * **State-Aware Navigator:** A graph-based system tracks movement. If you leave a room and come back, PipeDream restores the previous image.
-* **Smart Cost-Saving Cache (v0.3.0):** If you backtrack to a previously visited room, PipeDream bypasses the LLM analysis entirely and instantly loads the cached image, saving time and API costs.
+* **Fully Local:** Scenes are painted by [Qwen-Image-2.1](https://huggingface.co/Qwen/Qwen-Image-2.1) (with Viggle's 6-step turbo) via [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp), and analysed by Qwen3-VL-8B via [llama.cpp](https://github.com/ggml-org/llama.cpp).
+* **Smart Cache (v0.3.0):** If you backtrack to a previously visited room, PipeDream bypasses the LLM analysis entirely and instantly loads the cached image.
 * **Image-to-Image Consistency (v0.3.0):** An optional mode that uses the previous scene as a structural guide to maintain lighting, style, and architectural consistency as you move between rooms.
 * **Spatial Awareness (v0.3.0):** The AI director maps physical paths and exits to their cardinal directions so the generated rooms accurately reflect the game's geography.
 * **Graceful Shutdown:** Safely handles terminal interrupts (CTRL+C) and window closures without leaving zombie processes behind.
@@ -99,7 +97,7 @@ pipedream-gui --img2img adventure
 
 ### Cache Management
 
-PipeDream caches aggressively to save money. Cache data is namespaced by your game command and art style, and lives in your user cache folder (`~/.cache/pipedream` on Linux, `~/Library/Caches/pipedream` on macOS, `%LOCALAPPDATA%\pipedream\Cache` on Windows). To wipe the world map and start fresh for a specific game:
+PipeDream caches aggressively to save time. Cache data is namespaced by your game command and art style, and lives in your user cache folder (`~/.cache/pipedream` on Linux, `~/Library/Caches/pipedream` on macOS, `%LOCALAPPDATA%\pipedream\Cache` on Windows). To wipe the world map and start fresh for a specific game:
 
 ```bash
 # Note: Ensure the flag comes before the game command
@@ -126,14 +124,17 @@ uv sync
 uv run pytest
 ```
 
-3. **Configure Environment:**
-Create a `.env` file in the folder you run PipeDream from (the repo root works):
+3. **Keep the models loaded between runs (optional):**
+Loading the models takes a few seconds each launch. While iterating, start the servers once and point PipeDream at them. Logs for managed servers are written to `~/.local/state/pipedream/log`.
 
-```ini
-GEMINI_API_KEY=AIzaSy...
-LLM_MODEL=gemini/gemini-2.5-flash
-IMAGE_MODEL=gemini/gemini-2.5-flash-image
+```bash
+pipedream-gui --llm-url http://127.0.0.1:8080 --image-url http://127.0.0.1:1234 adventure
 ```
+
+Environment overrides:
+
+* `PIPEDREAM_SD_SERVER` / `PIPEDREAM_LLAMA_SERVER`: use your own server binaries, e.g. a CUDA build of stable-diffusion.cpp (about 30% faster than Vulkan on NVIDIA).
+* `PIPEDREAM_LLM_DEVICE`: the ggml device for the scene-analysis model (`Vulkan1`, `CUDA0`, or `none` for CPU).
 
 ## Troubleshooting
 
@@ -142,3 +143,9 @@ IMAGE_MODEL=gemini/gemini-2.5-flash-image
 ```powershell
 pipedream-gui cmd /c adventure
 ```
+## Credits & Licences
+
+PipeDream itself is MIT licensed. The models it downloads have their own licences:
+
+* **Built with Qwen.** [Qwen-Image-2.1](https://huggingface.co/Qwen/Qwen-Image-2.1) and the [Viggle turbo](https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo) distillation are released under the Qwen Research License Agreement, which permits **non-commercial use only**.
+* [Qwen3-VL-8B-Instruct](https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF) is Apache 2.0.
