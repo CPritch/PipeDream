@@ -30,7 +30,7 @@ The first launch downloads the AI models and the local inference servers into yo
 * Tested on Linux x86_64. Windows (Vulkan) and Apple Silicon (Metal) builds are wired up but not yet tested.
 * If you have a second GPU (e.g. a laptop's integrated graphics), the scene-analysis model runs there; otherwise it runs on the CPU.
 
-The game never waits for a picture: you can keep typing while one paints, and pictures for scenes you've already left are skipped. On an RTX 5060 Laptop GPU with the default model, a new place appears about 4.5 s after you press Enter (about 2 s to read the scene, 2 s to paint it), a change to the current place about 5.5 s, and a place you've seen before instantly.
+The game never waits for a picture: you can keep typing while one paints, and pictures for scenes you've already left are skipped. On an RTX 5060 Laptop GPU with the default model, a new place appears about 4.5 s after you press Enter (about 2.5 s to read the scene, 2 s to paint it), a change to the current place takes 6–8 s (finding what changed in the picture, then repainting just that), and a place you've seen before appears instantly.
 
 ### Image models
 
@@ -85,7 +85,8 @@ pipedream-gui frotz games/zork1.z5
 
 * **Universal Compatibility:** Works with Python scripts, binaries, and interpreters (Frotz, Glulxe).
 * **Remembers the World:** Places are recognised by the room titles games print (or named by the AI director in games without them), never by guessing where a direction leads. Come back by any route, even a one-way chimney, and you see the same picture.
-* **Pictures Follow the Story:** Open a window, move a rug or defeat a troll, and the place's picture is edited to match instead of being painted from scratch. When the lights go out, the picture goes dark.
+* **Pictures Follow the Story:** Take the lamp, open the trap door or defeat the troll, and only that part of the place's picture is repainted to match; the rest stays exactly as it was. Come back later and whoever has turned up (a thief, say) is shown too. When the lights go out, the picture goes dark.
+* **One World, One Look:** Big landmarks like Zork's white house get a single detailed look, so the house is the same house from every side.
 * **Repaint:** If a picture comes out wrong, the Repaint button (or Ctrl+R) paints that place again, keeping any changes the story has made to it.
 * **Fully Local:** Scenes are painted by Microsoft's [Mage-Flow Edit Turbo](https://github.com/microsoft/Mage) via [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp), and read via [llama.cpp](https://github.com/ggml-org/llama.cpp) by the same Qwen3-VL model the image model uses as its text encoder.
 * **Graceful Shutdown:** Safely handles terminal interrupts (CTRL+C) and window closures without leaving zombie processes behind.
