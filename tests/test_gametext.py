@@ -77,6 +77,9 @@ def test_without_possessions():
     ("A white house with boarded-up windows, facing north. A narrow path.",
      "A white house with boarded-up windows. A narrow path."),
     ("Behind House: A path leads into the forest.", "A path leads into the forest."),
+    ("A large room with a narrow passage running from east to west and a stone stairway.",
+     "A large room with a narrow passage and a stone stairway."),
+    ("Bloodstained walls, and a forbidding hole leading west.", "Bloodstained walls."),
 ])
 def test_clean_prompt(prompt, cleaned):
     assert clean_prompt(prompt) == cleaned

@@ -11,7 +11,7 @@ import zipfile
 import pytest
 
 from pipedream import runtime
-from pipedream.director import Director, Verdict
+from pipedream.director import Director, Finding, Verdict, obvious_verdict
 from pipedream.imagegen import ImageGenerator, Painter, changed, darkness_png, mask_png
 from pipedream.world import Place
 
@@ -84,22 +84,35 @@ def test_director_assesses_changes_in_the_current_place(server, reply, expected)
 
     assert Director(url).assess(living_room, "The door reluctantly opens.", "open trap door") == expected
     content = json.loads(seen[0][2])["messages"][1]["content"]
-    assert "A living room with a rug. Drag the rug aside." in content and "open trap door" in content
+    assert "THE PICTURE SHOWS: A living room with a rug.\nALREADY CHANGED (don't repeat these):\n- Drag the rug aside." in content
+    assert "THE PLAYER ACTED ON: trap door" in content
+
+
+@pytest.mark.parametrize("command, reply, verdict", [
+    ("take lamp", "Taken.", Verdict("remove", "lamp", "Remove the lamp.")),
+    ("open the trophy case", "Opened.", Verdict("change", "trophy case", "Open the trophy case.")),
+    ("put painting in case", "Done.", Verdict("change", "case", "Place the painting in the case.")),
+    ("take all", "brass lantern: Taken.", None),
+    ("take lamp", "You already have that!", None),
+])
+def test_obvious_replies_need_no_model(command, reply, verdict):
+    assert obvious_verdict(command, reply) == verdict
 
 
 def test_director_finds_things_in_the_picture(server, tmp_path):
     url, routes, seen = server
     picture = tmp_path / "room.png"
     picture.write_bytes(b"PNG")
-    reply = '```json\n[\n\t{"bbox_2d": [252, 276, 370, 603], "label": "brass lantern"},\n\t{"bbox_2d": [5, 5, 3, 3]}\n]\n```'
+    reply = '{"bbox_2d": [252, 276, 370, 603], "behind": "bare wooden floor"}\n{"bbox_2d": [5, 5, 3, 3]}'
     routes[("POST", "/v1/chat/completions")] = json_reply({"choices": [{"message": {"content": reply}}]})
 
-    assert Director(url).find(str(picture), "brass lantern") == [[252, 276, 370, 603]]  # the malformed box is dropped
+    # The malformed second box is dropped
+    assert Director(url).find(str(picture), "brass lantern") == Finding([[252, 276, 370, 603]], "bare wooden floor")
     image = json.loads(seen[0][2])["messages"][0]["content"][0]["image_url"]["url"]
     assert image == "data:image/png;base64," + base64.b64encode(b"PNG").decode()
 
-    routes[("POST", "/v1/chat/completions")] = chat_reply("There is no troll in the image.")
-    assert Director(url).find(str(picture), "troll") == []
+    routes[("POST", "/v1/chat/completions")] = chat_reply({})
+    assert Director(url).find(str(picture), "troll") == Finding([])
 
 
 @pytest.mark.parametrize("location, expected", [("Field", "Field"), ("none", None), ("", None)])
@@ -204,6 +217,17 @@ def test_painter_retries_an_edit_that_changed_nothing(tmp_path):
 
     assert [c["seed"] for c in generator.calls] == [7, 8] and generator.calls[0]["mask"] is None
     assert open(edited, "rb").read() == png_of(100, box=[0, 0, 500, 500], inner=200)
+
+
+def test_painter_gives_up_on_an_edit_that_never_shows(tmp_path):
+    base = tmp_path / "base.png"
+    base.write_bytes(png_of(100))
+    lamp = [250, 250, 500, 500]
+    # A removal that repaints the lamp in place changes its box a little, which isn't enough
+    generator = FakeGenerator([png_of(100, box=lamp, inner=140), png_of(100, box=lamp, inner=60)])
+
+    assert Painter(generator, str(tmp_path), "Ink").edit(str(base), "Remove the lamp.", [lamp], min_change=80) is None
+    assert len(generator.calls) == 2
 
 
 def test_changed_measures_only_inside_the_boxes(tmp_path):

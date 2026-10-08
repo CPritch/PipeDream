@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from pipedream import games
-from pipedream.director import NO_CHANGE, Verdict
+from pipedream.director import NO_CHANGE, Finding, Verdict
 from pipedream.engine import PipeDream, session_name
 
 MOCK_GAME = Path(games.__file__).parent / "mock_game.py"
@@ -29,9 +29,9 @@ class FakePainter:
         self.painted.append(prompt)
         return self._file(f"paint{len(self.painted)}")
 
-    def edit(self, image, instruction, boxes=()):
+    def edit(self, image, instruction, boxes=(), min_change=None):
         self.edited.append((Path(image).name, instruction, boxes))
-        return self._file(f"edit{len(self.edited)}")
+        return None if "nothing" in instruction else self._file(f"edit{len(self.edited)}")
 
     def darkness(self):
         return self._file("dark")
@@ -49,7 +49,7 @@ def stub_ai(engine, tmp_path, changes=None, delay=None, visible=("rug", "lamp", 
     engine.director.describe_place = lambda name, text: f"picture of {name}"
     engine.director.assess = lambda place, text, command: changes.get(command, NO_CHANGE)
     engine.director.locate = lambda text: None
-    engine.director.find = lambda image, thing: [[100, 200, 300, 400]] if thing in visible else []
+    engine.director.find = lambda image, thing: Finding([[100, 200, 300, 400]], "bare floor") if thing in visible else Finding([])
     engine.painter = FakePainter(tmp_path, delay)
     return engine.painter
 
@@ -183,17 +183,19 @@ def test_changes_in_a_place_edit_its_picture(tmp_path):
         "take leaflet": Verdict("remove", "leaflet", "Remove the leaflet."),  # never painted, so nothing to remove
         "move rug": Verdict("change", "rug", "Drag the rug aside, revealing a trap door."),
         "open trap door": Verdict("change", "trap door", "Open the trap door."),  # not found: edit the whole picture
+        "wave": Verdict("change", "", "Change nothing at all."),  # an edit that makes no difference isn't kept
     })
     shown = []
     engine.custom_image = shown.append
 
     feed(engine, [(None, LIVING_ROOM), ("take lamp", "Taken."), ("take leaflet", "Taken."), ("move rug", "With a "
           "great effort, the rug is moved to one side of the room, revealing the dusty cover of a closed trap door."),
-          ("open trap door", "The door reluctantly opens."), ("look", LIVING_ROOM)])
+          ("open trap door", "The door reluctantly opens."), ("wave", "You wave."), ("look", LIVING_ROOM)])
 
-    assert painter.edited == [("paint1.png", "Remove the lamp.", [[100, 200, 300, 400]]),
+    assert painter.edited == [("paint1.png", "Remove the lamp, leaving bare floor in its place.", [[100, 200, 300, 400]]),
                               ("edit1.png", "Drag the rug aside, revealing a trap door.", [[100, 200, 300, 400]]),
-                              ("edit2.png", "Open the trap door.", [])]
+                              ("edit2.png", "Open the trap door.", []),
+                              ("edit3.png", "Change nothing at all.", [])]
     living_room = engine.world.current
     assert [e["target"] for e in living_room.edits] == ["lamp", "rug", "trap door"]
     assert Path(living_room.image).name == "edit3.png"
