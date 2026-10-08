@@ -79,6 +79,7 @@ def test_without_possessions():
      "A white house with windows with wooden planks nailed across. A narrow path."),
     ("Behind House: A path leads into the forest.", "A path leads into the forest."),
     ("A living room with a rug. Outdoors: true. Landmarks: white house.", "A living room with a rug."),
+    ("A passage to the north and a passage to the south are visible.", "A passage and a passage are visible."),
     ("A large room with a narrow passage running from east to west and a stone stairway.",
      "A large room with a narrow passage and a stone stairway."),
     ("Bloodstained walls, and a forbidding hole leading west.", "Bloodstained walls."),

@@ -409,3 +409,20 @@ def test_news_is_judged_one_line_at_a_time(tmp_path):
 
     assert asked == ["There is a bloody axe here.", thief]
     assert [e[1] for e in painter.edited] == ["Add a thief leaning on the wall."]
+
+
+def test_news_seen_before_is_reused_line_by_line(tmp_path):
+    engine = PipeDream(["zork1.z3"], cache_dir=tmp_path)
+    painter = stub_ai(engine, tmp_path, visible=())
+
+    def assess(place, text, command):
+        return Verdict("add", "axe" if "axe" in text else "thief", f"Add the {'axe' if 'axe' in text else 'thief'}.")
+
+    engine.director.assess = assess
+    axe, thief = "There is a bloody axe here.", "Someone carrying a large bag is leaning against one of the walls here."
+    troll_room = "The Troll Room\nThis is a small room with passages to the east and south."
+    feed(engine, [(None, troll_room), ("west", MAZE_TEXT), ("east", f"The Troll Room\n{axe}"),
+                  ("west", MAZE_TEXT), ("east", f"The Troll Room\n{axe}\n{thief}")])
+
+    # The axe was painted on the first return; the second only adds the thief, on top of that picture
+    assert [(e[0], e[1]) for e in painter.edited] == [("paint1.png", "Add the axe."), ("edit1.png", "Add the thief.")]
