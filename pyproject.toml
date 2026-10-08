@@ -8,11 +8,9 @@ authors = [
   { name = "Pxld Ltd.", email = "charlespritchard.work@gmail.com" }
 ]
 dependencies = [
-    "litellm>=1.80.16",
     "pexpect>=4.9.0",
     "platformdirs>=4.3.0",
     "pyside6>=6.10.1",
-    "python-dotenv>=1.2.1",
     "requests>=2.32.5",
 ]
 

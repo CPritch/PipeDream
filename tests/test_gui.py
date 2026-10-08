@@ -16,7 +16,9 @@ def test_shutdown_while_waiting_for_input_does_not_hang(tmp_path, monkeypatch):
     monkeypatch.setattr("pipedream.navigator.DEFAULT_CACHE_DIR", str(tmp_path))
 
     app = QGuiApplication.instance() or QGuiApplication([])
-    backend = Backend([sys.executable, "-m", "pipedream.games.mock_game"])
+    # Explicit URLs mean no local servers are started; the director is stubbed so they're never called
+    backend = Backend([sys.executable, "-m", "pipedream.games.mock_game"],
+                      llm_url="http://127.0.0.1:9", image_url="http://127.0.0.1:9")
 
     deadline = time.monotonic() + 15
     while "open field" not in backend.console_text and time.monotonic() < deadline:

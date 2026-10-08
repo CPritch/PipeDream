@@ -116,7 +116,7 @@ ApplicationWindow {
                 Item { Layout.fillWidth: true } // Spacer
 
                 Text {
-                    text: "SESSION COST: $" + backend.session_cost
+                    text: "LOCAL · Built with Qwen"
                     color: "#00ff00"
                     font.family: "Courier New"
                     font.pixelSize: 12

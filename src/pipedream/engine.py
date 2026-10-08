@@ -3,17 +3,18 @@ import sys
 import shlex
 import argparse
 import pexpect
-from dotenv import load_dotenv, find_dotenv
 from pipedream import __version__
 from pipedream.director import Director
 from pipedream.cache import SmartCache
+from pipedream.imagegen import ImageGenerator
 from pipedream.navigator import Navigator
+from pipedream.runtime import LocalBackends
 
 if sys.platform == 'win32':
     from pexpect.popen_spawn import PopenSpawn
 
 class PipeDream:
-    def __init__(self, command, style=None, clear_cache=False, img2img=False, cache_dir=None):
+    def __init__(self, command, style=None, clear_cache=False, img2img=False, cache_dir=None, llm_url=None, image_url=None):
         # Keep the argv list intact so paths with spaces survive the trip to pexpect
         self.argv = shlex.split(command) if isinstance(command, str) else list(command)
         self.command = shlex.join(self.argv)
@@ -27,8 +28,8 @@ class PipeDream:
         self.session_id = f"{safe_cmd}_{safe_style}"
         self.img2img = img2img
 
-        self.director = Director(self, style_prompt=style, img2img=self.img2img)
-        self.cache = SmartCache(self, session_id=self.session_id, style_prompt=style, img2img=self.img2img, cache_dir=cache_dir)
+        self.director = Director(self, llm_url, style_prompt=style, img2img=self.img2img)
+        self.cache = SmartCache(self, ImageGenerator(image_url), session_id=self.session_id, style_prompt=style, img2img=self.img2img, cache_dir=cache_dir)
         self.navigator = Navigator(session_id=self.session_id, cache_dir=cache_dir)
 
         if clear_cache:
@@ -38,7 +39,6 @@ class PipeDream:
         self.custom_print = print
         self.custom_input = input
         self.custom_image = self.default_image_handler
-        self.cost_callback = None
         self.status_callback = None
 
     def safe_print(self, text):
@@ -48,11 +48,6 @@ class PipeDream:
 
     def default_image_handler(self, path):
         print(f"[*] IMAGE GENERATED: {path}")
-
-    def report_cost(self, amount):
-        """Helper to safely trigger cost callback"""
-        if self.cost_callback:
-            self.cost_callback(amount)
 
     def report_status(self, msg):
         """Helper to safely trigger status callback"""
@@ -170,24 +165,29 @@ class PipeDream:
 
         self.previous_text = text
 
-def main():
-    load_dotenv(find_dotenv(usecwd=True))
+def build_parser(description):
+    parser = argparse.ArgumentParser(description=description)
 
-    parser = argparse.ArgumentParser(description="PipeDream: AI Visualizer for Interactive Fiction")
-    
     parser.add_argument('--version', action='version', version=f"%(prog)s {__version__}")
     parser.add_argument('--art-style', dest='style', type=str, default=None, help="Visual style prompt")
     parser.add_argument('--clear-cache', action='store_true', help="Wipe cache before starting")
-    parser.add_argument('--img2img', action='store_true', help="Enable image-to-image generation")
+    parser.add_argument('--img2img', action='store_true', help="Use the previous scene as a reference image")
+    parser.add_argument('--llm-url', default=None, help="Use an already-running llama-server instead of starting one")
+    parser.add_argument('--image-url', default=None, help="Use an already-running sd-server instead of starting one")
     parser.add_argument('game_command', nargs=argparse.REMAINDER, help="The command to run the game")
-    
+    return parser
+
+def main():
+    parser = build_parser("PipeDream: AI Visualizer for Interactive Fiction")
     args = parser.parse_args()
     if not args.game_command:
         parser.print_help()
         sys.exit(1)
 
-    engine = PipeDream(args.game_command, style=args.style, clear_cache=args.clear_cache, img2img=args.img2img)
-    engine.start()
+    with LocalBackends(args.llm_url, args.image_url).start() as backends:
+        engine = PipeDream(args.game_command, style=args.style, clear_cache=args.clear_cache, img2img=args.img2img,
+                           llm_url=backends.llm_url, image_url=backends.image_url)
+        engine.start()
 
 if __name__ == "__main__":
     main()

@@ -1,27 +1,22 @@
-import base64
 import os
 import json
 import hashlib
 import shutil
-import requests
 import platformdirs
-from litellm import completion, image_generation, completion_cost
-from litellm.exceptions import RateLimitError, AuthenticationError
 
 # e.g. ~/.cache/pipedream on Linux, rather than wherever the user launched from
 DEFAULT_CACHE_DIR = platformdirs.user_cache_dir("pipedream", appauthor=False)
 
 class SmartCache:
-    def __init__(self, engine, session_id="default", style_prompt=None, cache_dir=None, img2img=False):
+    def __init__(self, engine, generator, session_id="default", style_prompt=None, cache_dir=None, img2img=False):
         self.engine = engine
+        self.generator = generator
         cache_dir = cache_dir or DEFAULT_CACHE_DIR
         self.cache_dir = cache_dir
         self.img2img = img2img
         self.images_dir = os.path.join(cache_dir, f"images_{session_id}")
         self.map_file = os.path.join(cache_dir, f"mapping_{session_id}.json")
         self.memory = {}
-        self.model = os.getenv("IMAGE_MODEL", "gemini/gemini-2.5-flash-image")
-        self.api_key = os.getenv("GEMINI_API_KEY")
         self.style = style_prompt or "Oil painting, dark fantasy, atmospheric"
 
         os.makedirs(self.images_dir, exist_ok=True)
@@ -80,108 +75,23 @@ class SmartCache:
         filepath = os.path.join(self.images_dir, filename)
 
         self.engine.report_status("Generating Image...")
-        print(f"[*] Generating Image ({self.model})...")
+        print("[*] Generating Image...")
+
+        references = []
+        if self.img2img and reference_image and os.path.exists(reference_image):
+            print("   > Injecting reference image for img2img transition...")
+            references.append(reference_image)
 
         try:
-            # GEMINI (AI Studio Route)
-            # Gemini image generation uses the completion endpoint with modalities.
-            if "gemini" in self.model.lower():
-                print("   > Using Gemini 'completion' route (AI Studio)...")
-                
-                call_model = self.model
-                if not call_model.startswith("gemini/"):
-                     call_model = f"gemini/{call_model}"
-
-                message_content = [{"type": "text", "text": visual_prompt}]
-
-                if self.img2img and reference_image and os.path.exists(reference_image):
-                    print("   > Injecting reference image for img2img transition...")
-                    with open(reference_image, "rb") as img_file:
-                        b64_image = base64.b64encode(img_file.read()).decode('utf-8')
-                        
-                    message_content.append({
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/png;base64,{b64_image}"}
-                    })
-
-                response = completion(
-                    model=call_model,
-                    messages=[{"role": "user", "content": message_content}],
-                    modalities=["image", "text"],
-                    api_key=self.api_key
-                )
-                
-                img_data = None
-                message = response.choices[0].message
-
-                try:
-                    cost = completion_cost(completion_response=response)
-                    print(f"[$$$] Image Cost: ${cost:.6f}")
-                    self.engine.report_cost(cost)
-                except:
-                    pass
-                
-                if hasattr(message, "images") and message.images:
-                    first_image = message.images[0]
-                    
-                    if 'image_url' in first_image and 'url' in first_image['image_url']:
-                        url_data = first_image['image_url']['url']
-                        
-                        if "base64," in url_data:
-                            b64_data = url_data.split("base64,")[1]
-                        else:
-                            b64_data = url_data
-                            
-                        img_data = base64.b64decode(b64_data)
-
-                if img_data:
-                    with open(filepath, 'wb') as f:
-                        f.write(img_data)
-                    self.memory[text_hash] = filepath
-                    self._save_map()
-                    self.engine.report_status("Ready")
-                    return filepath
-                else:
-                    print(f"[!] Parsing Failed. Could not find ['image_url']['url'] in: {message.images}")
-                    self.engine.report_status("Error")
-                    return None
-
-            # STANDARD (DALL-E, etc via image_generation)
-            else:
-                print("   > Using Standard 'image_generation' route...")
-                response = image_generation(
-                    model=self.model,
-                    prompt=visual_prompt
-                )
-
-                try:
-                    cost = completion_cost(completion_response=response)
-                    print(f"[$$$] Image Cost: ${cost:.6f}")
-                    self.engine.report_cost(cost)
-                except: pass
-                
-                image_url = response.data[0].url
-                img_data = requests.get(image_url).content
-                with open(filepath, 'wb') as f:
-                    f.write(img_data)
-                
-                self.memory[text_hash] = filepath
-                self._save_map()
-                self.engine.report_status("Ready")
-                return filepath
-            
-        except RateLimitError:
-            print("\n[!] CRITICAL: QUOTA EXCEEDED")
-            print("    Your API key is valid, but you have run out of free requests.")
-            print("    Please wait a minute or check your billing at aistudio.google.com\n")
-            self.engine.report_status("Error")
-            return None
-        except AuthenticationError:
-            print("\n[!] CRITICAL: AUTH FAILED")
-            print("    Your API key is invalid. Check your .env file.\n")
-            self.engine.report_status("Error")
-            return None
+            img_data = self.generator.generate(visual_prompt, references)
         except Exception as e:
             print(f"[!] Image Gen Error: {e}")
             self.engine.report_status("Error")
             return None
+
+        with open(filepath, 'wb') as f:
+            f.write(img_data)
+        self.memory[text_hash] = filepath
+        self._save_map()
+        self.engine.report_status("Ready")
+        return filepath

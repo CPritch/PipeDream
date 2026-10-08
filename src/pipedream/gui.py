@@ -1,31 +1,28 @@
 import sys
-import os
 import queue
-import argparse
 import signal
 import threading
 from pathlib import Path
 
-from dotenv import load_dotenv, find_dotenv
 from PySide6.QtCore import QObject, Signal, Slot, Property
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
 
-from pipedream import __version__
-from pipedream.engine import PipeDream
+from pipedream.engine import PipeDream, build_parser
+from pipedream.runtime import LocalBackends
 
 class GameWorker(QObject):
     text_received = Signal(str)
     image_received = Signal(str)
-    cost_updated = Signal(float)
     status_updated = Signal(str)
 
-    def __init__(self, command, style=None, clear_cache=False, img2img=False):
+    def __init__(self, command, style=None, clear_cache=False, img2img=False, llm_url=None, image_url=None):
         super().__init__()
         self.command = command
         self.style = style
         self.clear_cache = clear_cache
         self.img2img = img2img
+        self.backends = LocalBackends(llm_url, image_url)
         self.input_queue = queue.Queue()
         self.engine = None
         # Daemon so a slow image request can't keep the app alive after the window closes
@@ -38,23 +35,34 @@ class GameWorker(QObject):
         self.input_queue.put(None)  # unblocks handle_input; the engine treats None as "stop"
         if self.engine:
             self.engine.cleanup()
+        self.backends.stop()
         self.thread.join(timeout)
 
     def run(self):
+        try:
+            # Started from this thread on purpose: the servers are tied to the thread that spawns them
+            self.backends.start(progress=self.handle_status)
+        except Exception as e:
+            self.text_received.emit(f"[!] Could not start the local AI models: {e}")
+            self.status_updated.emit("Error")
+            return
+
         self.engine = PipeDream(
             self.command, 
             style=self.style, 
             clear_cache=self.clear_cache,
-            img2img=self.img2img
+            img2img=self.img2img,
+            llm_url=self.backends.llm_url,
+            image_url=self.backends.image_url
         )
         
         # HOOKS
         self.engine.custom_print = self.handle_game_text
         self.engine.custom_input = self.handle_input
         self.engine.custom_image = self.handle_image
-        self.engine.cost_callback = self.handle_cost
         self.engine.status_callback = self.handle_status
         
+        self.status_updated.emit("Ready")
         self.engine.start()
 
     def handle_game_text(self, text):
@@ -64,9 +72,6 @@ class GameWorker(QObject):
         full_path = Path(path).absolute().as_uri()
         self.image_received.emit(full_path)
         self.status_updated.emit("Ready") # Reset status when image arrives
-
-    def handle_cost(self, amount):
-        self.cost_updated.emit(amount)
 
     def handle_status(self, msg):
         self.status_updated.emit(msg)
@@ -80,29 +85,19 @@ class GameWorker(QObject):
 class Backend(QObject):
     textChanged = Signal()
     imageChanged = Signal()
-    costChanged = Signal()   # New
-    statusChanged = Signal() # New
+    statusChanged = Signal()
 
-    def __init__(self, command, style=None, clear_cache=False, img2img=False):
+    def __init__(self, command, style=None, clear_cache=False, img2img=False, llm_url=None, image_url=None):
         super().__init__()
         self._text = ""
         self._image = ""
-        self._cost = 0.0000
         self._status = "Initializing..."
         
-        self._check_api_key()
-        
-        self.worker = GameWorker(command, style, clear_cache, img2img)
+        self.worker = GameWorker(command, style, clear_cache, img2img, llm_url, image_url)
         self.worker.text_received.connect(self.append_text)
         self.worker.image_received.connect(self.update_image)
-        self.worker.cost_updated.connect(self.add_cost)
         self.worker.status_updated.connect(self.update_status)
         self.worker.start()
-
-    def _check_api_key(self):
-        key = os.getenv("GEMINI_API_KEY")
-        if not key:
-            self._text += "\n⚠️ MISSING API KEY. VISUALS DISABLED.\n"
 
     # --- PROPERTIES ---
     @Property(str, notify=textChanged)
@@ -110,9 +105,6 @@ class Backend(QObject):
 
     @Property(str, notify=imageChanged)
     def current_image(self): return self._image
-
-    @Property(str, notify=costChanged)
-    def session_cost(self): return f"{self._cost:.4f}"
 
     @Property(str, notify=statusChanged)
     def status_message(self): return self._status
@@ -131,10 +123,6 @@ class Backend(QObject):
         self._image = path
         self.imageChanged.emit()
 
-    def add_cost(self, amount):
-        self._cost += amount
-        self.costChanged.emit()
-
     def update_status(self, msg):
         self._status = msg
         self.statusChanged.emit()
@@ -144,17 +132,8 @@ class Backend(QObject):
 
 def main():
     signal.signal(signal.SIGINT, signal.SIG_DFL)
-    load_dotenv(find_dotenv(usecwd=True))
 
-    parser = argparse.ArgumentParser(description="PipeDream GUI")
-    
-    parser.add_argument('--version', action='version', version=f"%(prog)s {__version__}")
-    parser.add_argument('--art-style', dest='style', type=str, default=None, help="Visual style prompt")
-    parser.add_argument('--clear-cache', action='store_true', help="Clear image cache")
-    parser.add_argument('--img2img', action='store_true', help="Enable image-to-image generation for visual consistency")
-    parser.add_argument('game_command', nargs=argparse.REMAINDER, help="Command to run")
-    
-    args = parser.parse_args()
+    args = build_parser("PipeDream GUI").parse_args()
 
     if not args.game_command:
         print("[*] No game specified. Launching internal demo...")
@@ -165,7 +144,8 @@ def main():
     app = QGuiApplication(sys.argv)
     engine = QQmlApplicationEngine()
 
-    backend = Backend(game_cmd, style=args.style, clear_cache=args.clear_cache, img2img=args.img2img)
+    backend = Backend(game_cmd, style=args.style, clear_cache=args.clear_cache, img2img=args.img2img,
+                      llm_url=args.llm_url, image_url=args.image_url)
     engine.rootContext().setContextProperty("backend", backend)
 
     qml_file = Path(__file__).parent / "ui/main.qml"
