@@ -1,7 +1,9 @@
 import re
 import sys
+import queue
 import shlex
 import argparse
+import threading
 import pexpect
 from pipedream import __version__
 from pipedream.director import Director
@@ -41,6 +43,11 @@ class PipeDream:
         self.custom_image = self.default_image_handler
         self.status_callback = None
 
+        # Scenes are illustrated on a background thread so the game never waits for a picture
+        self.scenes = queue.Queue()
+        self.latest_scene = 0
+        self.scene_thread = threading.Thread(target=self._scene_loop, daemon=True)
+
     def safe_print(self, text):
         """Wrapper to ensure we call the latest custom_print"""
         if self.custom_print:
@@ -56,6 +63,7 @@ class PipeDream:
 
     def start(self):
         self.custom_print(f"[*] Launching: {self.command}")
+        self.scene_thread.start()
         
         if sys.platform == 'win32':
             self.process = PopenSpawn(self.argv, encoding='utf-8')
@@ -73,7 +81,6 @@ class PipeDream:
                     break
 
                 self.last_input = user_input.strip()
-                self.navigator.set_last_command(user_input)
 
                 self.process.sendline(user_input)
                 
@@ -91,6 +98,7 @@ class PipeDream:
 
     def cleanup(self):
         self.custom_print("\n[*] Stopping PipeDream...")
+        self.scenes.put(None)  # the scene thread finishes what's queued, then exits
         if self.process:
             try:
                 if sys.platform == 'win32':
@@ -108,7 +116,8 @@ class PipeDream:
             clean_text = self.clean_output(raw_output)
             
             self.custom_print(clean_text)
-            self.trigger_pipeline(clean_text)
+            self.latest_scene += 1
+            self.scenes.put((self.latest_scene, clean_text, self.last_input))
             
         except pexpect.TIMEOUT:
             pass
@@ -129,7 +138,11 @@ class PipeDream:
             
         return text.strip()
 
-    def trigger_pipeline(self, text):
+    def _scene_loop(self):
+        while (job := self.scenes.get()) is not None:
+            self.trigger_pipeline(*job)
+
+    def trigger_pipeline(self, scene_id, text, command):
         if len(text.strip()) < 5:
             return
 
@@ -156,10 +169,12 @@ class PipeDream:
             visual_prompt, 
             self.cache.generate, 
             text,
+            command,
             pre_cached_image=cached_img
         )
 
-        if image_path:
+        # A newer scene arrived while this one was being painted, so this picture is already out of date
+        if image_path and scene_id == self.latest_scene:
             print(f"   > Image ready.")
             self.custom_image(image_path)
 

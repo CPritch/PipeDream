@@ -14,7 +14,6 @@ class Navigator:
         self.nodes = {}  # { uuid: { image_path: str, edges: { cmd: uuid } } }
         self.genesis_id = None
         self.current_node_id = None
-        self.last_command = None
         
         # Opposites map for auto-backtracking
         self.opposites = {
@@ -47,11 +46,7 @@ class Navigator:
         self.current_node_id = node_id
         self.save_graph()
 
-    def set_last_command(self, cmd):
-        """Call this right before sending input to the game process."""
-        self.last_command = cmd.strip().lower()
-
-    def process_move(self, visual_prompt, generator_func, raw_text, pre_cached_image=None):
+    def process_move(self, visual_prompt, generator_func, raw_text, command, pre_cached_image=None):
         """
         Decides whether to move, generate, or stay put.
         Returns: The image path to display.
@@ -62,7 +57,7 @@ class Navigator:
             return self.nodes[self.current_node_id].get("image_path")
 
         current_node = self.nodes[self.current_node_id]
-        cmd = self.last_command if self.last_command is not None else START_COMMAND
+        cmd = command.strip().lower() if command is not None else START_COMMAND
 
         # If we recognize the room from the cache, find its exact node in the graph.
         if pre_cached_image:

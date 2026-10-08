@@ -1,5 +1,6 @@
 import shutil
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -46,6 +47,7 @@ def play(argv, cache_dir, commands):
 
     engine.cache.generate = generate
     engine.start()
+    engine.scene_thread.join(10)
     return engine, "\n".join(printed), generated
 
 
@@ -83,3 +85,36 @@ def test_echo_strip_only_removes_the_echoed_command(tmp_path):
 
     assert engine.clean_output("n\r\nYou are in a forest.") == "You are in a forest."
     assert engine.clean_output("You are in a forest.\nPaths lead north.") == "You are in a forest.\nPaths lead north."
+
+
+def test_slow_images_never_block_the_game_or_show_stale_scenes(demo_argv, tmp_path):
+    engine = PipeDream(demo_argv, cache_dir=tmp_path)
+    all_commands_sent = threading.Event()
+    commands = iter(["north", "south", "quit"])
+    shown, input_was_free = [], []
+
+    def next_command(prompt):
+        command = next(commands)
+        if command == "quit":
+            all_commands_sent.set()
+        return command
+
+    def slow_generate(raw_text, visual_prompt, reference_image=None):
+        # If painting blocked the game, the remaining commands could never be sent while we wait here
+        input_was_free.append(all_commands_sent.wait(5))
+        path = tmp_path / f"{len(input_was_free)}.png"
+        path.touch()
+        engine.cache.memory[engine.cache._get_hash(raw_text)] = str(path)
+        return str(path)
+
+    engine.custom_print = lambda text: None
+    engine.custom_input = next_command
+    engine.custom_image = shown.append
+    engine.director.describe_scene = lambda text, previous_text="": "a picture"
+    engine.cache.generate = slow_generate
+    engine.start()
+    engine.scene_thread.join(15)
+
+    assert input_was_free and all(input_was_free)
+    # Opening field and forest finished after the player had already walked back, so only the field is shown
+    assert shown == [str(tmp_path / "1.png")]
