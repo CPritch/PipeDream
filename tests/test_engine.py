@@ -1,3 +1,4 @@
+import re
 import shutil
 import sys
 import threading
@@ -23,6 +24,7 @@ class FakePainter:
     def __init__(self, folder, delay=None):
         self.folder, self.delay, self.edits = Path(folder), delay, True
         self.painted, self.edited = [], []
+        self.removed = {}  # picture -> things edited out of it (or out of the pictures it was made from)
 
     def paint(self, prompt, seed=None):
         if self.delay:
@@ -32,7 +34,12 @@ class FakePainter:
 
     def edit(self, image, instruction, boxes=(), min_change=None, attempts=1, first_attempt=0):
         self.edited.append((Path(image).name, instruction, boxes))
-        return None if "nothing" in instruction else self._file(f"edit{len(self.edited)}")
+        if "nothing" in instruction:
+            return None
+        path = self._file(f"edit{len(self.edited)}")
+        removed = re.match(r"Remove the ([^,.]+)", instruction)
+        self.removed[Path(path).name] = self.removed.get(Path(image).name, set()) | ({removed[1]} if removed else set())
+        return path
 
     def darkness(self):
         return self._file("dark")
@@ -50,9 +57,11 @@ def stub_ai(engine, tmp_path, changes=None, delay=None, visible=("rug", "lamp", 
     engine.director.describe_place = lambda name, text, *context: Description(f"picture of {name}", {})
     engine.director.assess = lambda place, text, command: changes.get(command, NO_CHANGE)
     engine.director.locate = lambda text: None
-    engine.director.find = lambda image, thing: Finding([[100, 200, 300, 400]], "wooden floor") if thing in visible else Finding([])
-    engine.painter = FakePainter(tmp_path, delay)
-    return engine.painter
+    painter = FakePainter(tmp_path, delay)
+    engine.director.find = lambda image, thing: Finding([[100, 200, 300, 400]], "wooden floor") \
+        if thing in visible and thing not in painter.removed.get(Path(image).name, set()) else Finding([])
+    engine.painter = painter
+    return painter
 
 
 @pytest.fixture
@@ -369,3 +378,34 @@ def test_an_edit_that_should_reveal_something_is_retried_until_it_does(tmp_path)
 
     assert [e[0] for e in painter.edited] == ["paint1.png", "paint1.png"]
     assert ("edit1.png", "trap door") in looks and Path(engine.world.current.image).name == "edit2.png"
+
+
+def test_a_removal_that_repaints_the_thing_is_dropped(tmp_path):
+    engine = PipeDream(["zork1.z3"], cache_dir=tmp_path)
+    painter = stub_ai(engine, tmp_path, changes={"take sword": Verdict("remove", "sword", "Remove the sword.")})
+    engine.director.find = lambda image, thing: Finding([[100, 200, 300, 400]], "wall")  # the sword never goes
+
+    feed(engine, [(None, LIVING_ROOM), ("take sword", "Taken.")])
+
+    assert len(painter.edited) == 2  # tried twice with different seeds
+    assert Path(engine.world.current.image).name == "paint1.png" and engine.world.current.edits == []
+
+
+def test_news_is_judged_one_line_at_a_time(tmp_path):
+    engine = PipeDream(["zork1.z3"], cache_dir=tmp_path)
+    painter = stub_ai(engine, tmp_path, visible=("bloody axe",))
+    asked = []
+
+    def assess(place, text, command):
+        asked.append(text)
+        if "axe" in text:
+            return Verdict("add", "bloody axe", "Add a bloody axe.")  # already in the picture, so skipped
+        return Verdict("add", "thief", "Add a thief leaning on the wall.")
+
+    engine.director.assess = assess
+    thief = "Someone carrying a large bag is casually leaning against one of the walls here."
+    troll_room = "The Troll Room\nThis is a small room with passages to the east and south."
+    feed(engine, [(None, troll_room), ("west", MAZE_TEXT), ("east", f"The Troll Room\nThere is a bloody axe here.\n{thief}")])
+
+    assert asked == ["There is a bloody axe here.", thief]
+    assert [e[1] for e in painter.edited] == ["Add a thief leaning on the wall."]
