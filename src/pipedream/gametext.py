@@ -111,7 +111,8 @@ _NEGATED_PHRASE = re.compile(r",?\s*\b(?:with|and|but|having)?\s*\b(?:no|without
 _EXITS = re.compile(rf"\b(exits?|leads? to|paths? to)\b|\b({_DIRECTION}|up|down|in|out)\s*:", re.IGNORECASE)
 # What's left of "A doorway is to the east" once the direction has gone
 _DANGLING = re.compile(r"\b(is|are|was|were|lies|lie|leads?|goes|go|runs|opens|stands|sits|winds|continues|extends|heads|"
-                       r"facing|faces|toward|towards|beyond|into|onto|to|from|of|with|at|near|holds|contains|has|features|shows)[.!?]?$",
+                       r"facing|faces|toward|towards|beyond|into|onto|to|from|of|with|at|near|holds|contains|has|features|shows|"
+                       r"leading|running|winding|stretching|heading|going)[.!?]?$",
                        re.IGNORECASE)
 
 
@@ -126,6 +127,8 @@ def clean_prompt(prompt):
         if _NEGATION.search(sentence):
             continue
         sentence = re.sub(rf"\b{_DIRECTION}\s+of\b", "near", sentence, flags=re.IGNORECASE)  # "field west of a house"
+        sentence = re.sub(rf"\b(?:from\s+)?(?:the\s+)?{_DIRECTION}\s+to\s+(?:the\s+)?{_DIRECTION}\b", "", sentence,
+                          flags=re.IGNORECASE)  # "running from east to west"
         sentence = _tidy(_COMPASS.sub("", sentence))
         if _DANGLING.search(sentence) and "," in sentence:
             sentence = sentence[:sentence.rindex(",")] + "."  # "boarded windows, facing." loses only its last clause
@@ -139,6 +142,7 @@ def _tidy(sentence):
     sentence = re.sub(r"(^|\s)-(?=\s)", r"\1", sentence)
     sentence = re.sub(r"\b(with|and|or)\s+(?:and|or)\b", r"\1", sentence)
     sentence = re.sub(r"\s+(?:and|or)(?=\s*[.,;!?])", "", sentence)
+    sentence = re.sub(r"\s+(?:leading|running|winding|stretching|heading|going)(?=\s+(?:and|or)\b|\s*[,;])", "", sentence)
     sentence = re.sub(r"\s+([.,;!?])", r"\1", re.sub(r"\s{2,}", " ", sentence)).strip()
     sentence = re.sub(r"^[,;]\s*", "", sentence)
     sentence = re.sub(r"[,;]\s*([.!?])$", r"\1", sentence)

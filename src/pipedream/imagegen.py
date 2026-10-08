@@ -65,22 +65,22 @@ class Painter:
         # Style first: the image model weights the start of the prompt most
         return self._save(self.generator.generate(f"{self.style}. {prompt}", seed=self.seed if seed is None else seed))
 
-    def edit(self, image, instruction, boxes=()):
-        """Edit a picture. With boxes (0-1000 coordinates, from the director), only those areas are repainted."""
+    def edit(self, image, instruction, boxes=(), min_change=None):
+        """Edit a picture. With boxes (0-1000 coordinates, from the director), only those areas are repainted.
+
+        Returns the new picture's path, or None if no attempt changed the picture by at least `min_change`.
+        """
+        min_change = _VISIBLE_CHANGE if min_change is None else min_change
         # Without the style and "keep everything else", edits drift towards a brighter, cleaner look
         prompt = f"{self.style}. {instruction} Keep everything else exactly the same."
         width, height = self.generator.width, self.generator.height
         mask = mask_png(width, height, boxes) if boxes else None
-        best, best_change = None, -1
         # The edit model sometimes returns the picture practically unchanged; another seed usually takes
         for seed in (self.seed, self.seed + 1 if self.seed >= 0 else -1):
             png = self.generator.generate(prompt, [image], seed=seed, init_image=image if mask else None, mask=mask)
-            change = changed(image, png, boxes)
-            if change > best_change:
-                best, best_change = png, change
-            if change >= _VISIBLE_CHANGE:
-                break
-        return self._save(best)
+            if changed(image, png, boxes) >= min_change:
+                return self._save(png)
+        return None
 
     def darkness(self):
         path = os.path.join(self.folder, "darkness.png")
@@ -99,8 +99,10 @@ class Painter:
 
 
 # Largest mean difference between corresponding cells of a coarse grid (0-255) for an edit to count as visible.
-# No-op edits measure 15-25; edits that did what was asked, 30 and up.
-_VISIBLE_CHANGE = 30
+# No-op edits measure 15-40; edits that did what was asked, 50 and up. A removal clears its whole box, so it
+# measures far more (170+) than an object repainted in place (30-40).
+_VISIBLE_CHANGE = 45
+REMOVAL_CHANGE = 80
 
 
 def changed(before_path, after_png, boxes=()):
