@@ -24,6 +24,16 @@ if sys.platform == 'win32':
 _ALSO_CALLED = {"lamp": "lantern", "lantern": "lamp", "torch": "lantern", "rope": "coil of rope", "knife": "dagger"}
 _UNDERGROUND = re.compile(r"\b(underground|cave|cavern|tunnel|cellar|mine|subterranean|grotto|crypt|dungeon)", re.I)
 
+def _overlapping(boxes, others):
+    """Whether any box covers much of the same area as any other (0-1000 coordinates)."""
+    for a in boxes:
+        for b in others:
+            w, h = min(a[2], b[2]) - max(a[0], b[0]), min(a[3], b[3]) - max(a[1], b[1])
+            smaller = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))
+            if w > 0 and h > 0 and w * h > 0.3 * smaller:
+                return True
+    return False
+
 def session_name(argv, style):
     """A folder name for one game and art style: readable, and short enough for Windows paths."""
     game = re.sub(r"[^a-zA-Z0-9]+", "-", os.path.basename(argv[-1]) if argv else "game").strip("-")[:40]
@@ -228,23 +238,29 @@ class PipeDream:
             place.visitors = {}
             world.save()
         elif world.news and scene_id == self.latest_scene:
-            return self._visitors(scene_id, place, " ".join(world.news))
+            return self._visitors(scene_id, place, world.news)
         self._show(scene_id, place.image)
 
-    def _visitors(self, scene_id, place, news):
-        """Back at a known place, the game mentions something new ("There is a bloody axe here"): show it."""
+    def _visitors(self, scene_id, place, lines):
+        """Back at a known place, the game mentions something new (a thief, an axe on the floor): show it.
+
+        Each line is judged on its own: asked about "There is a bloody axe here. Someone carrying a large bag is
+        leaning against the wall." together, the director picks the axe, which is already in the picture.
+        """
+        news = " ".join(lines)
         if news not in place.visitors or not os.path.exists(place.visitors[news]):
             self._show(scene_id, place.image, ready=False)  # the place itself straight away, then what's new
-            verdict = self.director.assess(place, news, "(comes back here)")
-            image = None
-            if scene_id != self.latest_scene:
-                return  # the player has moved on; a visitor is only worth painting while they're here
-            if verdict.kind == "add" and verdict.target and self.director.find(place.image, verdict.target).boxes:
-                pass  # already in the picture ("There is a bloody axe here" where the troll dropped it)
-            elif verdict.kind in ("change", "add", "remove") and self.painter.edits:
-                self.report_status("Generating Image...")
-                image, _ = self._edit(place.image, verdict.kind, verdict.edit, verdict.target)
-            place.visitors[news] = image or place.image  # remembered either way, so the same news is instant
+            image = place.image
+            for line in lines:
+                verdict = self.director.assess(place, line, "(comes back here)")
+                if scene_id != self.latest_scene:
+                    return  # the player has moved on; a visitor is only worth painting while they're here
+                if verdict.kind == "add" and verdict.target and self.director.find(image, verdict.target).boxes:
+                    continue  # already in the picture ("There is a bloody axe here" where the troll dropped it)
+                if verdict.kind in ("change", "add", "remove") and self.painter.edits:
+                    self.report_status("Generating Image...")
+                    image = self._edit(image, verdict.kind, verdict.edit, verdict.target)[0] or image
+            place.visitors[news] = image  # remembered either way, so the same news is instant next time
             self.world.save()
         self._show(scene_id, place.visitors[news])
 
@@ -272,7 +288,10 @@ class PipeDream:
         if image and verdict.expect and not self.director.find(image, verdict.expect).boxes:
             # The edit was meant to reveal something the story now depends on (the trap door): one more go
             print(f"   > No {verdict.expect} to be seen yet, trying again")
-            image = self._edit(place.image, verdict.kind, verdict.edit, target, found, first_attempt=1)[0] or image
+            retry = self._edit(place.image, verdict.kind, verdict.edit, target, found, first_attempt=1)[0]
+            if retry is None:
+                print("   > Keeping the first attempt")
+            image = retry or image
         if image is None:
             return self.report_status("Ready")
         place.image, place.visitors = image, {}
@@ -299,11 +318,19 @@ class PipeDream:
             # Naming what's left, not just what goes, stops the model painting the thing straight back in
             instruction = f"Remove the {target}, leaving only bare {found.surface or 'surroundings'} where it was."
         print(f"   > Edit: {instruction}" + (f" (at the {target})" if found.boxes else ""))
-        edited = self.painter.edit(image, instruction, found.boxes, REMOVAL_CHANGE if kind == "remove" else None,
-                                   attempts=2 if kind == "remove" else 1, first_attempt=first_attempt)
-        if edited is None:
-            print("   > The edit made no visible difference, so it was dropped.")
-        return edited, instruction
+        if kind != "remove":
+            edited = self.painter.edit(image, instruction, found.boxes, first_attempt=first_attempt)
+            if edited is None:
+                print("   > The edit made no visible difference, so it was dropped.")
+            return edited, instruction
+        # A removal can repaint the thing in place ("Remove the sword" painting a new sword), which a pixel check
+        # can't tell from success, so look for it again
+        for attempt in (first_attempt, first_attempt + 1):
+            edited = self.painter.edit(image, instruction, found.boxes, REMOVAL_CHANGE, first_attempt=attempt)
+            if edited and not _overlapping(self.director.find(edited, target).boxes, found.boxes):
+                return edited, instruction
+            print(f"   > The {target} is still there" + (", trying again" if attempt == first_attempt else ", so the edit was dropped."))
+        return None, instruction
 
     def _repaint(self):
         place = self.world.current

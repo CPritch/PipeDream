@@ -124,6 +124,11 @@ class Verdict(NamedTuple):
 NO_CHANGE = Verdict("none")
 
 
+_PARSER_REFUSAL = re.compile(r"(you can't|you cannot|you can not|you don't|you do not|you aren't|i don't|i beg your "
+                             r"pardon|that's not|there is no|there's no|there's nothing|you see no|it is already|"
+                             r"it's already|nothing happens|what do you want)\b")
+
+
 def _revealed_thing(phrase):
     """The thing a reveal is about: "a rickety staircase descending into darkness" -> "rickety staircase",
     "the dusty cover of a closed trap door" -> "trap door"."""
@@ -135,6 +140,8 @@ def obvious_verdict(command, reply):
     """The verdict for the standard one-word replies, e.g. "take lamp" answered "Taken.", without asking the model."""
     words, thing = (command or "").lower().split(), command_object(command)
     reply = reply.strip().lower()
+    if _PARSER_REFUSAL.match(reply):
+        return NO_CHANGE  # "You can't see any troll here!" changes nothing, and needs no model to say so
     if not words or not thing:
         return None
     if words[0] in ("take", "get", "grab", "pick") and reply == "taken.":
