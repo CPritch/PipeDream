@@ -287,6 +287,23 @@ def test_pasting_keeps_the_original_outside_the_boxes(tmp_path):
     assert all(pasted.pixelColor(x, y).value() == 100 for x, y in ((0, 0), (479, 359), (400, 40), (40, 300)))
 
 
+def test_an_unconfined_painter_edits_the_whole_picture_but_keeps_only_real_changes(tmp_path):
+    from PySide6.QtGui import QImage
+    base = tmp_path / "base.png"
+    base.write_bytes(png_of(100, 480, 360))
+    sword = [250, 250, 500, 500]
+    # The model removes the sword (a dark patch here) and shifts everything else very slightly
+    generator = FakeGenerator([png_of(97, 480, 360, box=sword, inner=20)])
+    generator.width, generator.height = 480, 360
+
+    edited = Painter(generator, str(tmp_path), "Ink", confine=False).edit(str(base), "Remove the sword.", [sword])
+
+    call, = generator.calls
+    assert call["mask"] is None and call["init"] is None and call["refs"] == [str(base)]
+    result = QImage(edited)
+    assert result.pixelColor(180, 135).value() == 20 and result.pixelColor(10, 10).value() == 100
+
+
 def test_painter_retries_an_edit_that_changed_nothing(tmp_path):
     base = tmp_path / "base.png"
     base.write_bytes(png_of(100))

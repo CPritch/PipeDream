@@ -62,7 +62,8 @@ class PipeDream:
         self.director = Director(llm_url)
         # PIPEDREAM_SEED fixes the image seed, so a replayed game paints comparable pictures
         self.painter = Painter(ImageGenerator(image_url, profile.sampling, *size), str(self.world.images), style,
-                               edits=profile.edits, seed=int(os.getenv("PIPEDREAM_SEED", "-1")))
+                               edits=profile.edits, seed=int(os.getenv("PIPEDREAM_SEED", "-1")),
+                               confine=profile.confine_edits)
 
         self.custom_print = print
         self.custom_input = input

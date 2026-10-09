@@ -54,12 +54,13 @@ class ImageGenerator:
 class Painter:
     """Paints places and edits their pictures, saving every picture under `folder`."""
 
-    def __init__(self, generator, folder, style=None, edits=True, seed=-1):
+    def __init__(self, generator, folder, style=None, edits=True, seed=-1, confine=True):
         self.generator = generator
         self.folder = folder
         self.style = style or DEFAULT_STYLE
         self.edits = edits  # whether the image model can edit a picture it's given
         self.seed = seed
+        self.confine = confine  # mask edits to their boxes, for models that otherwise redraw everything
 
     def paint(self, prompt, seed=None):
         # Style first: the image model weights the start of the prompt most
@@ -74,7 +75,7 @@ class Painter:
         # Without the style and "keep everything else", edits drift towards a brighter, cleaner look
         prompt = f"{self.style}. {instruction} Keep everything else exactly the same."
         width, height = self.generator.width, self.generator.height
-        mask = mask_png(width, height, boxes) if boxes else None
+        mask = mask_png(width, height, boxes) if boxes and self.confine else None
         # The edit model sometimes returns the picture practically unchanged; another seed often takes
         for attempt in range(first_attempt, first_attempt + attempts):
             seed = self.seed + attempt if self.seed >= 0 else -1

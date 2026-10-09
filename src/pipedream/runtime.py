@@ -71,6 +71,9 @@ class ImageProfile(NamedTuple):
     quantize: str = ""  # quantize the downloaded diffusion weights to this ggml type on first install
     devices: tuple = ()  # ggml device prefixes the model is known to render correctly on; empty means any
     edits: bool = True  # whether the model can edit a picture it's given, for changes within a place
+    # Repaint only the box around what changes (Mage-Flow redraws whatever it's given); False for models that keep
+    # the rest of a picture intact by themselves (FLUX.2 klein)
+    confine_edits: bool = True
 
 
 FOUR_STEP = {"sample_method": "euler", "sample_steps": 4, "guidance": {"txt_cfg": 1.0}}
@@ -124,7 +127,7 @@ PROFILES = {
         "director": _hf("Qwen/Qwen3-VL-4B-Instruct-GGUF", "Qwen3VL-4B-Instruct-Q4_K_M.gguf",
                         2497281664, "66358cb18bb6b3b1b6675aa412c7a88ef01d228f481184d13668e5201c730a0a"),
         "director_vision": _QWEN3VL_4B_VISION,
-    }, FOUR_STEP),
+    }, FOUR_STEP, confine_edits=False),
 }
 DEFAULT_PROFILE = "mage-flow"
 FALLBACK_PROFILE = "flux2-klein"  # ~6 s on Vulkan
