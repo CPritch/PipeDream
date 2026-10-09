@@ -9,7 +9,7 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
 
 from pipedream.engine import PipeDream, build_parser
-from pipedream.runtime import LocalBackends, DEFAULT_PROFILE
+from pipedream.runtime import LocalBackends, DEFAULT_PROFILE, game_command
 
 class GameWorker(QObject):
     text_received = Signal(str)
@@ -163,7 +163,7 @@ def main():
         print("[*] No game specified. Launching internal demo...")
         game_cmd = [sys.executable, "-m", "pipedream.games.mock_game"]
     else:
-        game_cmd = args.game_command
+        game_cmd = game_command(args.game_command)
 
     app = QGuiApplication(sys.argv)
     engine = QQmlApplicationEngine()

@@ -22,6 +22,10 @@ import requests
 DATA_DIR = platformdirs.user_data_dir("pipedream", appauthor=False)
 RUNTIMES_DIR = os.path.join(DATA_DIR, "runtimes")
 MODELS_DIR = os.path.join(DATA_DIR, "models")
+GAMES_DIR = os.path.join(DATA_DIR, "games")
+# Where tools/build-extras.sh puts what can't be downloaded: a CUDA build of sd-server, and dfrotz
+CUDA_SERVER_DIR = os.path.join(RUNTIMES_DIR, "sd-cuda")
+BIN_DIR = os.path.join(DATA_DIR, "bin")
 LOGS_DIR = platformdirs.user_log_dir("pipedream", appauthor=False)
 
 
@@ -63,6 +67,14 @@ RUNTIMES = {
         "llama": _github(*_LLAMA, "llama-b11510-bin-macos-arm64.tar.gz", 12047446,
                          "7367be3138fd39c857675cc37028e3164f1c2446f9a0ca4ce9ef7f565a2e0a4f"),
     },
+}
+
+# Games PipeDream can fetch by name, e.g. `pipedream-gui zork`
+GAMES = {
+    # Zork I, open-sourced by Microsoft under the MIT licence in November 2025
+    "zork": Download("zork1.z3", "https://raw.githubusercontent.com/historicalsource/zork1/"
+                     "97b7b3d68c075dd9af7da499c3e9690ada3471fd/COMPILED/zork1.z3", 86838,
+                     "37084966477dff679282de42974b2077156b1bd68fad92a65d4ea94d8eb64d79"),
 }
 
 class ImageProfile(NamedTuple):
@@ -265,12 +277,33 @@ def install_runtimes(progress=print):
             open(marker, "w").close()
         binary = _find_binary(folder, SERVER_BINARIES[kind])
         os.chmod(binary, 0o755)  # zip archives don't keep the executable bit
-        # e.g. PIPEDREAM_SD_SERVER=/path/to/sd-server for a local CUDA build (~30% faster than Vulkan on NVIDIA)
+        # e.g. PIPEDREAM_SD_SERVER=/path/to/sd-server for your own build
         paths[kind] = os.getenv(f"PIPEDREAM_{kind.upper()}_SERVER") or binary
         if kind == "sd":
             paths["sd_cli"] = _find_binary(folder, "sd-cli")
             os.chmod(paths["sd_cli"], 0o755)
+    # A CUDA build made here replaces the downloaded Vulkan one: Mage-Flow only renders on CUDA for now
+    cuda = {name: os.path.join(CUDA_SERVER_DIR, name + EXE) for name in ("sd-server", "sd-cli")}
+    if not os.getenv("PIPEDREAM_SD_SERVER") and all(map(os.path.exists, cuda.values())):
+        paths["sd"], paths["sd_cli"] = cuda["sd-server"], cuda["sd-cli"]
     return paths
+
+
+def game_command(argv, progress=print):
+    """The command to run: `argv` as given, or for a game PipeDream can fetch by name, an interpreter playing it."""
+    if len(argv) != 1 or argv[0].lower() not in GAMES:
+        return argv
+    story = GAMES[argv[0].lower()]
+    path = os.path.join(GAMES_DIR, story.name)
+    if not (os.path.exists(path) and os.path.getsize(path) == story.size):
+        os.makedirs(GAMES_DIR, exist_ok=True)
+        download(story, path, progress)
+    dfrotz = os.path.join(BIN_DIR, "dfrotz" + EXE)
+    if not os.path.exists(dfrotz) and not (dfrotz := shutil.which("dfrotz")):
+        raise RuntimeError("Zork needs Frotz's dfrotz: install Frotz (Debian and Ubuntu's frotz package has it), "
+                           "or build it with tools/build-extras.sh")
+    # -m: no MORE prompts. -r ch1: hide the status line, which repeats the place's name every turn.
+    return [dfrotz, "-q", "-m", "-r", "ch1", path]
 
 
 def install_models(profile, paths, progress=print, prefix=""):
@@ -311,7 +344,8 @@ def choose_profile(requested, devices, progress=print):
     """Fall back to a model that renders correctly when the requested one doesn't support these devices."""
     allowed = PROFILES[requested].devices
     if allowed and not any(d.startswith(allowed) for d in devices):
-        progress(f"{requested} needs a {'/'.join(allowed)} build of sd-server for now, using {FALLBACK_PROFILE} instead")
+        progress(f"{requested} needs a {'/'.join(allowed)} build of sd-server for now (on NVIDIA GPUs, build one with "
+                 f"tools/build-extras.sh), using {FALLBACK_PROFILE} instead")
         return FALLBACK_PROFILE
     return requested
 

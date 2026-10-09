@@ -22,11 +22,19 @@ Launch the GUI without arguments to play the internal mock game.
 pipedream-gui
 ```
 
+**3. Play Zork**
+PipeDream fetches *Zork I* (open-sourced by Microsoft under the MIT licence) and plays it in Frotz's `dfrotz`: install Frotz (Debian and Ubuntu's `frotz` package has it), or `tools/build-extras.sh` builds it.
+
+```bash
+pipedream-gui zork
+```
+
 The first launch downloads the AI models and the local inference servers into your user data folder (`~/.local/share/pipedream` on Linux), then prepares the image model for your GPU. That's up to 11 GB of downloads depending on the model, ending up as 7–8 GB on disk, plus another 11 GB for the editing model on machines with 32 GB of RAM (see below). Downloads use parallel connections, are checked against a pinned SHA-256, and resume where they left off if interrupted.
 
 ### Requirements
 
-* A GPU with **8 GB of VRAM** and Vulkan drivers (NVIDIA, AMD or Intel), and 16 GB of RAM (recommended). With 32 GB of RAM, changes to a place are drawn by a second, much better editing model.
+* A GPU with **8 GB of VRAM** and 16 GB of RAM (recommended). With 32 GB of RAM, changes to a place are drawn by a second, much better editing model.
+* For the default model, an NVIDIA GPU and a CUDA build of the image server, which upstream doesn't publish for Linux. Build it once from a clone of this repo, with the CUDA toolkit installed (10–30 minutes): `tools/build-extras.sh`. PipeDream finds it from then on. Without it, and on AMD and Intel GPUs (Vulkan), you get `flux2-klein` instead.
 * Tested on Linux x86_64. Windows (Vulkan) and Apple Silicon (Metal) builds are wired up but not yet tested.
 * If you have a second GPU (e.g. a laptop's integrated graphics), the scene-analysis model runs there; otherwise it runs on the CPU.
 
@@ -42,7 +50,7 @@ Pick one with `--image-model` and set the size with `--size` (default `768x576`)
 | `flux2-klein` | Vivid digital painting | ~4.4 s | ~6.3 s | yes, ~8 s | Apache 2.0 |
 | `qwen-image` | Darkest and moodiest | ~12 s | ~17 s | yes, ~17 s | Non-commercial |
 
-\* stable-diffusion.cpp's Vulkan backend currently renders Mage-Flow as noise, so PipeDream needs a CUDA build of `sd-server` for it (see `PIPEDREAM_SD_SERVER` below). Without one it falls back to `flux2-klein` and says so. The bundled servers are Vulkan builds.
+\* stable-diffusion.cpp's Vulkan backend currently renders Mage-Flow as noise, so it needs a CUDA build of `sd-server`: `tools/build-extras.sh` builds one for your NVIDIA GPU from the pinned commit. Without one, PipeDream falls back to `flux2-klein` and says so.
 
 † Mage-Flow paints new places quickly but can't make most changes (it won't open a window or a trophy case). On machines with 32 GB of RAM, PipeDream runs Qwen-Image-2.1 alongside it, just for edits: its weights stay in RAM and stream to the GPU, so new places stay fast. With less memory, Mage-Flow makes the edits itself (~4 s).
 
@@ -75,10 +83,10 @@ pipedream-gui adventure
 
 ### Example: Interactive Fiction (Frotz)
 
-Play classic Z-Machine games like *Zork*.
+Play classic Z-Machine games like *Zork*. `pipedream-gui zork` fetches Zork I for you; for any other story file:
 
 ```bash
-pipedream-gui frotz games/zork1.z5
+pipedream-gui dfrotz -q -m path/to/story.z5
 ```
 
 ---
@@ -143,7 +151,7 @@ pipedream-gui --llm-url http://127.0.0.1:8080 --image-url http://127.0.0.1:1234 
 
 Environment overrides:
 
-* `PIPEDREAM_SD_SERVER` / `PIPEDREAM_LLAMA_SERVER`: use your own server binaries, e.g. a CUDA build of stable-diffusion.cpp, which Mage-Flow needs for now and which is about 30% faster than Vulkan on NVIDIA (`cmake -B build -DSD_CUDA=ON && cmake --build build`).
+* `PIPEDREAM_SD_SERVER` / `PIPEDREAM_LLAMA_SERVER`: use your own server binaries, e.g. a stable-diffusion.cpp built for your GPU (`cmake -B build -DSD_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=native && cmake --build build`).
 * `PIPEDREAM_LLM_DEVICE`: the ggml device for the scene-analysis model (`Vulkan1`, `CUDA0`, or `none` for CPU).
 * `PIPEDREAM_SEED`: a fixed image seed, so replaying the same game paints comparable pictures.
 
@@ -156,8 +164,10 @@ pipedream-gui cmd /c adventure
 ```
 ## Credits & Licences
 
-PipeDream itself is MIT licensed. The models it downloads have their own licences:
+PipeDream itself is MIT licensed. What it downloads has its own licences:
 
+* [Zork I](https://github.com/historicalsource/zork1) is MIT, open-sourced by Microsoft in November 2025.
+* [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) and [llama.cpp](https://github.com/ggml-org/llama.cpp) are MIT.
 * [Mage-Flow](https://github.com/microsoft/Mage) (default) is MIT.
 * [Qwen3-VL-4B](https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF), [Qwen3-VL-8B](https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF) and [Qwen3-4B](https://huggingface.co/unsloth/Qwen3-4B-GGUF) are Apache 2.0.
 * [FLUX.2 klein 4B](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B) and the [FLUX.2 small decoder](https://huggingface.co/black-forest-labs/FLUX.2-small-decoder) are Apache 2.0.

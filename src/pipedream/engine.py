@@ -14,7 +14,7 @@ from pipedream.director import Director, Finding
 from pipedream.gametext import (apply_landmarks, command_object, find_title, from_title, full_name, has_no_visible_effect,
                                 is_dark, unwrap, without_possessions)
 from pipedream.imagegen import REMOVAL_CHANGE, ImageGenerator, Painter
-from pipedream.runtime import LocalBackends, PROFILES, DEFAULT_PROFILE
+from pipedream.runtime import LocalBackends, PROFILES, DEFAULT_PROFILE, game_command
 from pipedream.world import DEFAULT_CACHE_DIR, World
 
 if sys.platform == 'win32':
@@ -433,8 +433,9 @@ def main():
         parser.print_help()
         sys.exit(1)
 
+    game = game_command(args.game_command)
     with LocalBackends(args.llm_url, args.image_url, args.image_model).start() as backends:
-        engine = PipeDream(args.game_command, style=args.style, clear_cache=args.clear_cache,
+        engine = PipeDream(game, style=args.style, clear_cache=args.clear_cache,
                            llm_url=backends.llm_url, image_url=backends.image_url,
                            image_model=backends.profile, size=args.size,
                            edit_url=backends.edit_url, editor=backends.editor)

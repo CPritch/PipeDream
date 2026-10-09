@@ -561,6 +561,7 @@ def test_install_fetches_everything_once(server, tmp_path, monkeypatch, quantize
     monkeypatch.setattr(runtime, "MODELS_DIR", str(tmp_path / "models"))
     monkeypatch.setattr(runtime, "RUNTIMES", {(platform.system(), platform.machine()): {
         kind: item_for(url, f"{kind}.zip", data) for kind, data in archives.items()}})
+    monkeypatch.setattr(runtime, "CUDA_SERVER_DIR", str(tmp_path / "sd-cuda"))
     files = {role: item_for(url, f"{role}.safetensors", data) for role, data in models.items()}
     monkeypatch.setattr(runtime, "PROFILES", {"test": runtime.ImageProfile(files, runtime.FOUR_STEP, quantize)})
 
@@ -579,6 +580,71 @@ def test_install_fetches_everything_once(server, tmp_path, monkeypatch, quantize
         assert not (tmp_path / "models" / "diffusion.safetensors").exists()
     else:
         assert open(paths["diffusion"], "rb").read() == models["diffusion"]
+
+
+def zip_of(files):
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as z:
+        for name, text in files.items():
+            z.writestr(name, text)
+    return buffer.getvalue()
+
+
+@pytest.mark.parametrize("override", [None, "/my/sd-server"])
+def test_a_cuda_build_made_here_replaces_the_vulkan_server(server, tmp_path, monkeypatch, override):
+    url, routes, _ = server
+    archives = {"sd": zip_of({f"bin/sd-server{runtime.EXE}": "", f"bin/sd-cli{runtime.EXE}": ""}),
+                "llama": zip_of({f"bin/llama-server{runtime.EXE}": ""})}
+    for kind, data in archives.items():
+        serve_file(routes, f"/{kind}.zip", data)
+    monkeypatch.setattr(runtime, "RUNTIMES_DIR", str(tmp_path))
+    monkeypatch.setattr(runtime, "RUNTIMES", {(platform.system(), platform.machine()): {
+        kind: item_for(url, f"{kind}.zip", data) for kind, data in archives.items()}})
+    cuda = tmp_path / "sd-cuda"
+    monkeypatch.setattr(runtime, "CUDA_SERVER_DIR", str(cuda))
+    cuda.mkdir()
+    for name in ("sd-server", "sd-cli"):
+        (cuda / (name + runtime.EXE)).write_text("")
+    if override:
+        monkeypatch.setenv("PIPEDREAM_SD_SERVER", override)
+    else:
+        monkeypatch.delenv("PIPEDREAM_SD_SERVER", raising=False)
+
+    paths = runtime.install_runtimes(progress=lambda msg: None)
+
+    assert paths["sd"] == override or paths["sd"] == str(cuda / ("sd-server" + runtime.EXE))
+    assert paths["sd_cli"].startswith(str(tmp_path / ("sd" if override else "sd-cuda")))
+
+
+def test_zork_is_fetched_once_and_played_in_dfrotz(server, tmp_path, monkeypatch):
+    url, routes, seen = server
+    story = b"zork story"
+    serve_file(routes, "/zork1.z3", story)
+    monkeypatch.setattr(runtime, "GAMES_DIR", str(tmp_path / "games"))
+    monkeypatch.setattr(runtime, "BIN_DIR", str(tmp_path / "bin"))
+    monkeypatch.setattr(runtime, "GAMES", {"zork": item_for(url, "zork1.z3", story)})
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "bin" / ("dfrotz" + runtime.EXE)).write_text("")
+
+    argv = runtime.game_command(["Zork"], progress=lambda msg: None)
+
+    assert runtime.game_command(["zork"], progress=lambda msg: None) == argv
+    assert len(seen) == 1
+    assert argv[0] == str(tmp_path / "bin" / ("dfrotz" + runtime.EXE))
+    assert open(argv[-1], "rb").read() == story
+    assert runtime.game_command(["frotz", "zork1.z5"]) == ["frotz", "zork1.z5"]
+
+
+def test_zork_says_how_to_get_dfrotz(server, tmp_path, monkeypatch):
+    url, routes, _ = server
+    serve_file(routes, "/zork1.z3", b"zork story")
+    monkeypatch.setattr(runtime, "GAMES_DIR", str(tmp_path / "games"))
+    monkeypatch.setattr(runtime, "BIN_DIR", str(tmp_path / "bin"))
+    monkeypatch.setattr(runtime, "GAMES", {"zork": item_for(url, "zork1.z3", b"zork story")})
+    monkeypatch.setenv("PATH", str(tmp_path))
+
+    with pytest.raises(RuntimeError, match="build-extras.sh"):
+        runtime.game_command(["zork"], progress=lambda msg: None)
 
 
 @pytest.mark.parametrize("devices, expected", [
