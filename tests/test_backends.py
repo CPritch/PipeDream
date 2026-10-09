@@ -193,6 +193,15 @@ def test_director_falls_back_to_the_games_words(server):
     assert described.prompt == "This is part of a maze of twisty little passages, all alike."
 
 
+def test_director_falls_back_to_the_place_name_when_nothing_else_survives(server):
+    url, routes, _ = server
+    routes[("POST", "/v1/chat/completions")] = chat_reply({"setting": "underground", "prompt": "No light. Nothing here.",
+                                                           "landmarks": []})
+
+    described = Director(url).describe_place("East of Chasm", "East of Chasm\nThe bottom of which cannot be seen.")
+    assert described.prompt == "Near Chasm."
+
+
 def test_director_survives_a_failing_server(server):
     url, routes, _ = server
     routes[("POST", "/v1/chat/completions")] = json_reply({"error": "boom"}, status=500)

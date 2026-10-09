@@ -195,7 +195,9 @@ class Director:
             words = re.sub(r"(?i)\b(?:you are|you're)\s+(?:standing\s+|sitting\s+)?(?:in|on|at|inside|by|near)?\s*", "", words)
             prompt = clean_prompt(words)
             if len(prompt) < 5:
-                return None
+                # The game's words can clean down to nothing too ("the bottom of which cannot be seen"); the
+                # place's name still says what it is, and a wrong picture staying up is worse than a plain one
+                prompt = clean_prompt(f"{name}.") if len(clean_prompt(f"{name}.")) >= 5 else "A dim, quiet place."
         found = {}
         setting = reply.get("setting") if reply.get("setting") in ("outdoors", "indoors", "underground") else "outdoors"
         # A small model calls a chasm "outdoors" or a gallery "indoors" even when it's reached from a cellar. Climbing
