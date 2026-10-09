@@ -68,6 +68,7 @@ def test_director_describes_a_new_place_without_directions(server):
     request = json.loads(seen[0][2])
     assert request["response_format"]["type"] == "json_schema"
     assert "West of House" in request["messages"][1]["content"]
+    assert ["No", -8] in request["logit_bias"]  # no padding the description with what isn't there
 
 
 def test_director_keeps_only_new_landmarks_the_game_mentions(server):
@@ -121,6 +122,9 @@ def test_director_assesses_changes_in_the_current_place(server, reply, expected)
      Verdict("change", "rug", "Replace the rug with bare floor and the dusty cover of a closed trap door; the rug lies "
                               "crumpled at the edge.", "trap door")),
     ("take all", "brass lantern: Taken.", None),
+    ("(comes back here)", "There is a bloody axe here.", Verdict("add", "bloody axe", "Add a bloody axe lying on the ground.")),
+    ("(comes back here)", "There is an elvish sword here.",
+     Verdict("add", "elvish sword", "Add an elvish sword lying on the ground.")),
     ("take lamp", "You already have that!", None),
 ])
 def test_obvious_replies_need_no_model(command, reply, verdict):
@@ -315,7 +319,7 @@ def test_an_unconfined_painter_keeps_only_real_changes_around_the_thing(tmp_path
     from PySide6.QtGui import QColor, QImage, QPainter
     base = tmp_path / "base.png"
     base.write_bytes(png_of(100, 480, 360))
-    sword = [200, 250, 520, 560]  # x 96-250, y 90-202: big enough to edit in place, not close up
+    sword = [200, 250, 600, 560]  # x 96-288, y 90-202: big enough to edit in place, not close up
 
     def edit():
         # The sword removed (dark), something it revealed just beside it, something unasked-for far away, and
@@ -323,7 +327,7 @@ def test_an_unconfined_painter_keeps_only_real_changes_around_the_thing(tmp_path
         image = QImage(480, 360, QImage.Format_RGB32)
         image.fill(QColor(97, 97, 97))
         painter = QPainter(image)
-        for rect, grey in ((QRect(96, 90, 154, 112), 20), (QRect(255, 100, 75, 60), 200), (QRect(330, 100, 60, 60), 200),
+        for rect, grey in ((QRect(96, 90, 192, 112), 20), (QRect(290, 100, 50, 60), 200), (QRect(340, 100, 40, 60), 200),
                            (QRect(400, 280, 60, 60), 200)):
             painter.fillRect(rect, QColor(grey, grey, grey))
         painter.end()
@@ -339,14 +343,14 @@ def test_an_unconfined_painter_keeps_only_real_changes_around_the_thing(tmp_path
 
     call = generator.calls[0]
     assert call["mask"] is None and call["init"] is None and call["refs"] == [str(base)]
-    assert edited.pixelColor(173, 146).value() == 20  # the sword's gone
-    assert edited.pixelColor(270, 130).value() == 200  # what that revealed beside it is kept
-    assert edited.pixelColor(370, 130).value() == 200  # and what runs on from that, past the margin
+    assert edited.pixelColor(192, 146).value() == 20  # the sword's gone
+    assert edited.pixelColor(315, 130).value() == 200  # what that revealed beside it is kept
+    assert edited.pixelColor(362, 130).value() > 180  # and what runs on from that, past the margin (feathered)
     assert edited.pixelColor(430, 310).value() == 100  # far away: not asked for
     assert edited.pixelColor(10, 340).value() == 100  # nor is drift far away
     closer = QImage(Painter(generator, str(tmp_path), "Ink", confine=False).edit(str(base), "Remove the sword.", [sword],
                                                                                around=0.15, spread=False))
-    assert closer.pixelColor(173, 146).value() == 20 and closer.pixelColor(320, 130).value() == 100
+    assert closer.pixelColor(192, 146).value() == 20 and closer.pixelColor(362, 130).value() == 100
 
 
 def test_pasting_leaves_what_was_changed_before_alone(tmp_path):

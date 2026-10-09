@@ -460,6 +460,16 @@ def test_a_change_the_picture_already_shows_is_not_made_again(tmp_path):
     assert len(painter.edited) == 1 and Path(engine.world.current.image).name == "edit1.png"
 
 
+@pytest.mark.parametrize("after, still_there", [
+    ([[410, 310, 590, 540]], True),  # much the same box: the painting's still on the easel
+    ([[200, 100, 800, 900]], False),  # the bigger painting on the wall behind it
+    ([[560, 300, 760, 550]], False),  # the next painting along
+])
+def test_a_removal_is_judged_by_what_is_found_where_it_was(after, still_there):
+    from pipedream.engine import _overlapping
+    assert _overlapping(after, [[400, 300, 600, 550]]) == still_there
+
+
 def test_a_removal_takes_one_thing_and_ignores_others_like_it(tmp_path):
     engine = PipeDream(["zork1.z3"], cache_dir=tmp_path)
     painter = stub_ai(engine, tmp_path, changes={"take painting": Verdict("remove", "painting", "Remove the painting.")})

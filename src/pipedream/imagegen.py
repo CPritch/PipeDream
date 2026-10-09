@@ -203,8 +203,9 @@ def changed(before_path, after_png, boxes=()):
 
 def paste(original_path, edited_png, boxes, pad=0.15, spread=False, keep=()):
     """The original picture with only the edited boxes (plus `pad`) taken from the edit, blended in at the edges.
-    With `spread`, changes that run on from there are taken too, up to the box's own size again. Nothing is taken
-    inside `keep` except where it overlaps the boxes: opening the trophy case mustn't shut the trap door in front.
+    With `spread`, changes that run on from there are taken too, up to half the box's size past it. Nothing is
+    taken inside `keep` (or the margin round it) except where it overlaps the boxes: opening the trophy case mustn't
+    shut the trap door in front.
 
     The image model round-trips the whole picture through its VAE even when it only repaints the mask, which
     softens every pixel a little; over several edits that adds up, so everything outside the boxes is kept as is.
@@ -251,7 +252,7 @@ def _changed_cells(original, edited, gw, gh, threshold=35):
 
 
 def _spread(mask, original, edited, boxes):
-    """The mask, plus the changed cells joined to it, as far as the boxes doubled in size."""
+    """The mask, plus the changed cells joined to it, as far as half the boxes' size past them."""
     from PySide6.QtCore import Qt
     from PySide6.QtGui import QImage, QPainter
 
@@ -259,8 +260,9 @@ def _spread(mask, original, edited, boxes):
     hot = _changed_cells(original, edited, gw, gh)
     small = mask.scaled(gw, gh, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
     inside = [small.pixelColor(i % gw, i // gw).value() > 127 for i in range(gw * gh)]
-    reach = [any(2 * b[0] - b[2] <= (i % gw + .5) * 1000 / gw <= 2 * b[2] - b[0] and
-                 2 * b[1] - b[3] <= (i // gw + .5) * 1000 / gh <= 2 * b[3] - b[1] for b in boxes) for i in range(gw * gh)]
+    reach = [any(b[0] - (b[2] - b[0]) / 2 <= (i % gw + .5) * 1000 / gw <= b[2] + (b[2] - b[0]) / 2 and
+                 b[1] - (b[3] - b[1]) / 2 <= (i // gw + .5) * 1000 / gh <= b[3] + (b[3] - b[1]) / 2 for b in boxes)
+             for i in range(gw * gh)]
     todo, taken = [i for i in range(gw * gh) if inside[i]], set()
     while todo:
         i = todo.pop()
@@ -296,8 +298,9 @@ def _keep(mask, boxes, keep):
 
     kept = mask.copy()
     painter = QPainter(kept)
-    for box in keep:
-        painter.fillRect(rect(box), Qt.black)
+    for x1, y1, x2, y2 in keep:  # with the margin its own edit kept: the open trap door is bigger than the shut one
+        mx, my = (x2 - x1) * _AROUND, (y2 - y1) * _AROUND
+        painter.fillRect(rect((x1 - mx, y1 - my, x2 + mx, y2 + my)), Qt.black)
     for box in boxes:  # the thing being edited is never kept, even where it overlaps something changed before
         painter.drawImage(rect(box).topLeft(), mask.copy(rect(box)))
     painter.end()

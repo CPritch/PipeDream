@@ -25,14 +25,15 @@ _ALSO_CALLED = {"lamp": "lantern", "lantern": "lamp", "torch": "lantern", "rope"
 _UNDERGROUND = re.compile(r"\b(underground|cave|cavern|tunnel|cellar|mine|subterranean|grotto|crypt|dungeon)", re.I)
 
 def _overlapping(boxes, originals):
-    """Whether any box covers most of an original box (0-1000 coordinates): the same thing, still there.
+    """Whether any box and an original box (0-1000 coordinates) mostly cover each other: the same thing, still there.
 
-    A neighbour that only clips the box (the next painting along the gallery wall) doesn't count.
+    A neighbour that only clips the box (the next painting along the gallery wall) doesn't count, and nor does a
+    bigger thing behind it (the framed painting on the wall behind the one on the easel).
     """
     for a in boxes:
         for b in originals:
             w, h = min(a[2], b[2]) - max(a[0], b[0]), min(a[3], b[3]) - max(a[1], b[1])
-            if w > 0 and h > 0 and w * h > 0.5 * (b[2] - b[0]) * (b[3] - b[1]):
+            if w > 0 and h > 0 and w * h > 0.5 * max((b[2] - b[0]) * (b[3] - b[1]), (a[2] - a[0]) * (a[3] - a[1])):
                 return True
     return False
 

@@ -9,6 +9,9 @@ from pipedream.gametext import clean_prompt, command_object, underground
 
 # llama-server constrains each reply to a JSON schema, so there's no free text to parse. Each question is kept
 # narrow because a 4B model answers one clear question far more reliably than a combined one.
+# Told what not to paint, the model pads a description with "No doors. No exits. No signs..." until the length
+# limit, and cleaning that out can leave nothing; discouraging "No" gets a fuller description instead
+_NO_NEGATIONS = [["No", -8], [" No", -8]]
 _PROMPT_LIMIT = 320  # about the 50 words asked for; more is the model padding with invented details
 PLACE_SCHEMA = {
     "type": "object",
@@ -146,6 +149,11 @@ def obvious_verdict(command, reply):
     reply = reply.strip().lower()
     if _PARSER_REFUSAL.match(reply):
         return NO_CHANGE  # "You can't see any troll here!" changes nothing, and needs no model to say so
+    if there := re.fullmatch(r"(?:there is|there's) (an? |the |some )?(.+?) here\.", reply):
+        # A thing lying where the player comes back to (the troll's axe); told the picture shows the troll with
+        # it, the model can decide nothing's changed. Whether it's already shown is checked by looking.
+        some = "some" if there[1] == "some " else "an" if there[2][0] in "aeiou" else "a"
+        return Verdict("add", there[2], f"Add {some} {there[2]} lying on the ground.")
     if not words or not thing:
         return None
     if words[0] in ("take", "get", "grab", "pick") and reply == "taken.":
@@ -193,11 +201,14 @@ class Director:
         if came_from:
             user = f"THE PLAYER CAME FROM: {came_from.name} ({came_from.setting})\n\n" + user
         for temperature in (0.2, 0.7):
-            reply = self._ask(DESCRIBE_PLACE, user, PLACE_SCHEMA, max_tokens=240, temperature=temperature) or {}
+            reply = self._ask(DESCRIBE_PLACE, user, PLACE_SCHEMA, max_tokens=240, temperature=temperature,
+                              bias=_NO_NEGATIONS) or {}
             raw = reply.get("prompt", "")
             if len(raw) >= _PROMPT_LIMIT - 10 and "." in raw:
                 raw = raw[:raw.rfind(".") + 1]  # cut off at the length limit: drop the unfinished sentence
             prompt = clean_prompt(raw)
+            if len(prompt) < len(raw) / 2:
+                print(f"   > Described as {raw!r}")  # so a mangled prompt can be traced to what the model said
             # Too little survives when the model describes mostly what isn't there; a warmer second try differs
             if len(prompt) >= 20:
                 break
@@ -288,9 +299,9 @@ class Director:
         location = (reply or {}).get("location", "").strip().strip(".")
         return location if location and location.lower() != "none" else None
 
-    def _ask(self, system, user, schema, max_tokens=200, temperature=0.2):
+    def _ask(self, system, user, schema, max_tokens=200, temperature=0.2, bias=None):
         content = self._chat([{"role": "system", "content": system}, {"role": "user", "content": user}], max_tokens,
-                             temperature, {"type": "json_schema", "json_schema": {"name": "reply", "schema": schema}})
+                             temperature, {"type": "json_schema", "json_schema": {"name": "reply", "schema": schema}}, bias)
         if content is None:
             return None
         try:
@@ -303,7 +314,7 @@ class Director:
             print(f"[!] Director Error: {e}")
             return None
 
-    def _chat(self, messages, max_tokens, temperature, response_format=None):
+    def _chat(self, messages, max_tokens, temperature, response_format=None, bias=None):
         body = {
             "messages": messages,
             "temperature": temperature,
@@ -313,6 +324,8 @@ class Director:
         }
         if response_format:
             body["response_format"] = response_format
+        if bias:
+            body["logit_bias"] = bias
         try:
             response = requests.post(f"{self.llm_url}/v1/chat/completions", timeout=120, json=body)
             response.raise_for_status()

@@ -83,6 +83,7 @@ def test_without_possessions():
     ("A large room with a narrow passage running from east to west and a stone stairway.",
      "A large room with a narrow passage and a stone stairway."),
     ("Bloodstained walls, and a forbidding hole leading west.", "Bloodstained walls."),
+    ("A steep, east-facing cliff above a chasm.", "A steep cliff above a chasm."),
 ])
 def test_clean_prompt(prompt, cleaned):
     assert clean_prompt(prompt) == cleaned
@@ -136,6 +137,7 @@ def test_apply_landmarks(prompt, described):
     ("An art gallery with tall windows and empty frames. Paintings hang in the dim light.",
      "An art gallery and empty frames. Paintings hang in the dim light."),
     ("A cellar. Stars glitter overhead.", "A cellar."),
+    ("A chasm's edge, the bottom unseen, all under open air.", "A chasm's edge, the bottom unseen."),
     ("A damp cellar with a ramp.", "A damp cellar with a ramp."),
 ])
 def test_underground(prompt, cleaned):

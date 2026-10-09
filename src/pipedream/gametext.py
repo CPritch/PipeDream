@@ -140,7 +140,7 @@ _OPEN_AIR = r"(?:sky|skies|sun|sunlight|daylight|moon|moonlight|stars|open air|f
 def underground(prompt):
     """A prompt for a place underground, without the sky or windows a small model gives it anyway ("a chasm's edge
     under open sky", "a gallery with tall windows")."""
-    prompt = re.sub(rf"\s*,?\s*\b(?:under|beneath|below|in|into|to|towards?|against|through|with|of|by)\s+(?:the\s+|an?\s+)?"
+    prompt = re.sub(rf"\s*,?\s*(?:\ball\s+)?\b(?:under|beneath|below|in|into|to|towards?|against|through|with|of|by)\s+(?:the\s+|an?\s+)?"
                     rf"(?:[\w-]+\s+){{0,2}}{_OPEN_AIR}\b", "", prompt, flags=re.IGNORECASE)
     kept = [s for s in re.split(r"(?<=[.!?])\s+", prompt) if not re.search(rf"\b{_OPEN_AIR}\b", s, re.IGNORECASE)]
     return " ".join(kept)
@@ -164,6 +164,7 @@ def clean_prompt(prompt):
                           r"\1 with wooden planks nailed across", sentence, flags=re.IGNORECASE)
         sentence = re.sub(rf"\b(?:from\s+)?(?:the\s+)?{_DIRECTION}\s+to\s+(?:the\s+)?{_DIRECTION}\b", "", sentence,
                           flags=re.IGNORECASE)  # "running from east to west"
+        sentence = re.sub(rf",?\s*\b{_DIRECTION}(?:ern)?-[a-z]+\b", "", sentence, flags=re.IGNORECASE)  # "east-facing"
         sentence = _tidy(_COMPASS.sub("", sentence))
         if _DANGLING.search(sentence) and "," in sentence:
             sentence = sentence[:sentence.rindex(",")] + "."  # "boarded windows, facing." loses only its last clause
