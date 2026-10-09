@@ -161,10 +161,10 @@ def obvious_verdict(command, reply):
     refused = re.search(r"\b(already|locked|can't|cannot|won't|isn't|not|no)\b", reply)
     if words[0] == "open" and not refused and (reply == "opened." or re.search(r"\bopens?\b|\bopened\b", reply)):
         revealed = re.search(r"\breveal(?:s|ing)?\s+(.+?)[.!]", reply)  # "opens to reveal a rickety staircase"
-        # Plain "open the trophy case" leaves it looking much the same, or redraws it shut
+        # Plain "open the trophy case" leaves it looking much the same, or redraws it shut. What opening reveals
+        # isn't checked for: it's inside, in the dark (stairs going down), where the finder can't make it out
         return Verdict("change", thing, f"Open the {thing}" + (f", revealing {revealed[1]}." if revealed else
-                                                               " wide, swinging it fully open."),
-                       _revealed_thing(revealed[1]) if revealed else "")
+                                                               " wide, swinging it fully open."))
     if words[0] == "close" and not refused and (reply == "closed." or re.search(r"\bcloses?\b|\bclosed\b|\bshut\b", reply)):
         return Verdict("change", thing, f"Close the {thing}.")
     revealed = re.search(r"\breveal(?:s|ing)?\s+(.+?)[.!]", reply)
