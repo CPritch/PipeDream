@@ -106,13 +106,16 @@ def test_director_assesses_changes_in_the_current_place(server, reply, expected)
 
 @pytest.mark.parametrize("command, reply, verdict", [
     ("take lamp", "Taken.", Verdict("remove", "lamp", "Remove the lamp.")),
-    ("open the trophy case", "Opened.", Verdict("change", "trophy case", "Open the trophy case.")),
-    ("put painting in case", "Done.", Verdict("change", "case", "Place the painting in the case.")),
+    ("open the trophy case", "Opened.", Verdict("change", "trophy case", "Open the trophy case wide, swinging it fully open.")),
+    ("put painting in case", "Done.",
+     Verdict("change", "case", "Add a painting, small enough to fit, standing inside the case, among what is already there.")),
+    ("put the coins on the table", "Done.", Verdict("change", "table", "Add some coins lying on the table.")),
+    ("put egg under rug", "Done.", Verdict("change", "rug", "Add an egg under the rug.")),
     ("open trap door", "The door reluctantly opens to reveal a rickety staircase descending into darkness.",
      Verdict("change", "trap door", "Open the trap door, revealing a rickety staircase descending into darkness.",
              "rickety staircase")),
     ("open window", "With great effort, you open the window far enough to allow entry.",
-     Verdict("change", "window", "Open the window.")),
+     Verdict("change", "window", "Open the window wide, swinging it fully open.")),
     ("open window", "The window is already open.", None),
     ("move rug", "With a great effort, the rug is moved to one side of the room, revealing the dusty cover of a closed trap door.",
      Verdict("change", "rug", "Replace the rug with bare floor and the dusty cover of a closed trap door; the rug lies "
@@ -138,6 +141,17 @@ def test_director_finds_things_in_the_picture(server, tmp_path):
 
     routes[("POST", "/v1/chat/completions")] = chat_reply({})
     assert Director(url).find(str(picture), "troll") == Finding([])
+
+
+@pytest.mark.parametrize("reply, seen", [({"visible": True}, True), ({"visible": False}, False), ({}, False)])
+def test_director_says_whether_something_is_there(server, tmp_path, reply, seen):
+    url, routes, requests_seen = server
+    picture = tmp_path / "room.png"
+    picture.write_bytes(b"PNG")
+    routes[("POST", "/v1/chat/completions")] = chat_reply(reply)
+
+    assert Director(url).sees(str(picture), "bloody axe") is seen
+    assert "Is there a bloody axe in this picture?" in requests_seen[0][2].decode()
 
 
 @pytest.mark.parametrize("location, expected", [("Field", "Field"), ("none", None), ("", None)])
@@ -275,7 +289,7 @@ def test_painter_edits_keep_the_style_and_only_repaint_the_boxes(tmp_path):
 
     call, = generator.calls
     assert call["prompt"] == "Ink. Remove the lamp. Keep everything else exactly the same."
-    assert call["refs"] == [str(base)] and call["init"] == str(base) and call["seed"] == 7
+    assert call["refs"] == [str(base)] and call["init"] == str(base) and call["seed"] >= 7
     assert call["mask"] == mask_png(64, 48, [lamp])
     from PySide6.QtGui import QImage
     result = QImage(edited)
@@ -296,21 +310,132 @@ def test_pasting_keeps_the_original_outside_the_boxes(tmp_path):
     assert all(pasted.pixelColor(x, y).value() == 100 for x, y in ((0, 0), (479, 359), (400, 40), (40, 300)))
 
 
-def test_an_unconfined_painter_edits_the_whole_picture_but_keeps_only_real_changes(tmp_path):
+def test_an_unconfined_painter_keeps_only_real_changes_around_the_thing(tmp_path):
+    from PySide6.QtCore import QBuffer, QRect
+    from PySide6.QtGui import QColor, QImage, QPainter
+    base = tmp_path / "base.png"
+    base.write_bytes(png_of(100, 480, 360))
+    sword = [200, 250, 520, 560]  # x 96-250, y 90-202: big enough to edit in place, not close up
+
+    def edit():
+        # The sword removed (dark), something it revealed just beside it, something unasked-for far away, and
+        # everything else redrawn very slightly differently
+        image = QImage(480, 360, QImage.Format_RGB32)
+        image.fill(QColor(97, 97, 97))
+        painter = QPainter(image)
+        for rect, grey in ((QRect(96, 90, 154, 112), 20), (QRect(255, 100, 75, 60), 200), (QRect(330, 100, 60, 60), 200),
+                           (QRect(400, 280, 60, 60), 200)):
+            painter.fillRect(rect, QColor(grey, grey, grey))
+        painter.end()
+        buffer = QBuffer()
+        buffer.open(QBuffer.WriteOnly)
+        image.save(buffer, "PNG")
+        return bytes(buffer.data())
+
+    generator = FakeGenerator([edit(), edit()])
+    generator.width, generator.height = 480, 360
+
+    edited = QImage(Painter(generator, str(tmp_path), "Ink", confine=False).edit(str(base), "Remove the sword.", [sword]))
+
+    call = generator.calls[0]
+    assert call["mask"] is None and call["init"] is None and call["refs"] == [str(base)]
+    assert edited.pixelColor(173, 146).value() == 20  # the sword's gone
+    assert edited.pixelColor(270, 130).value() == 200  # what that revealed beside it is kept
+    assert edited.pixelColor(370, 130).value() == 200  # and what runs on from that, past the margin
+    assert edited.pixelColor(430, 310).value() == 100  # far away: not asked for
+    assert edited.pixelColor(10, 340).value() == 100  # nor is drift far away
+    closer = QImage(Painter(generator, str(tmp_path), "Ink", confine=False).edit(str(base), "Remove the sword.", [sword],
+                                                                               around=0.15, spread=False))
+    assert closer.pixelColor(173, 146).value() == 20 and closer.pixelColor(320, 130).value() == 100
+
+
+def test_pasting_leaves_what_was_changed_before_alone(tmp_path):
+    from PySide6.QtGui import QImage
+    from pipedream.imagegen import paste
+    base = tmp_path / "base.png"
+    base.write_bytes(png_of(100, 480, 360))
+    case, trap_door = [250, 100, 750, 600], [250, 500, 750, 900]
+    edited = png_of(100, 480, 360, box=[200, 50, 800, 950], inner=20)  # the edit redraws the trap door as well
+
+    pasted = QImage.fromData(paste(str(base), edited, [case], pad=0.3, keep=[trap_door]))
+
+    assert pasted.pixelColor(240, 120).value() == 20  # the case
+    assert pasted.pixelColor(240, 200).value() == 20  # where it overlaps the trap door, the case still wins
+    assert pasted.pixelColor(240, 280).value() == 100  # the rest of the trap door is left alone
+
+
+def test_a_small_thing_is_edited_close_up(tmp_path):
     from PySide6.QtGui import QImage
     base = tmp_path / "base.png"
     base.write_bytes(png_of(100, 480, 360))
-    sword = [250, 250, 500, 500]
-    # The model removes the sword (a dark patch here) and shifts everything else very slightly
-    generator = FakeGenerator([png_of(97, 480, 360, box=sword, inner=20)])
+    window = [450, 450, 550, 550]
+    generator = FakeGenerator([png_of(20, 480, 360)])  # the crop it was shown, all repainted
+    generator.width, generator.height = 480, 360
+    seen = []
+    real = generator.generate
+    generator.generate = lambda prompt, refs=(), **kw: (seen.append(QImage(refs[0]).size().toTuple()), real(prompt, refs, **kw))[1]
+
+    edited = QImage(Painter(generator, str(tmp_path), "Ink", confine=False).edit(str(base), "Open the window.", [window]))
+
+    assert seen == [(480, 360)]  # the crop, enlarged to the model's size
+    assert edited.pixelColor(240, 180).value() == 20 and edited.pixelColor(10, 10).value() == 100
+    assert sorted(p.name for p in tmp_path.iterdir() if "close-up" in p.name) == []  # the crop isn't left behind
+
+
+def test_a_fixed_seed_still_differs_between_edits(tmp_path):
+    base = tmp_path / "base.png"
+    base.write_bytes(png_of(100))
+    generator = FakeGenerator([png_of(100, box=[0, 0, 500, 500], inner=200)] * 3)
+    painter = Painter(generator, str(tmp_path), "Ink", seed=7)
+
+    for instruction in ("Open the window.", "Open the window.", "Open the door."):
+        painter.edit(str(base), instruction)
+
+    seeds = [c["seed"] for c in generator.calls]
+    assert seeds[0] == seeds[1] != seeds[2]  # repeatable, but not the same noise for every edit
+
+
+def test_a_whole_picture_edit_is_kept_however_little_it_changed(tmp_path):
+    base = tmp_path / "base.png"
+    base.write_bytes(png_of(100))
+    generator = FakeGenerator([png_of(102)])  # e.g. a thin sword removed from a big box
+
+    assert Painter(generator, str(tmp_path), "Ink", confine=False).edit(str(base), "Remove the sword.", [[0, 0, 500, 500]],
+                                                                        min_change=80) is not None
+
+
+def test_an_unplaced_edit_keeps_only_what_really_changed(tmp_path):
+    from PySide6.QtGui import QImage
+    base = tmp_path / "base.png"
+    base.write_bytes(png_of(100, 480, 360))
+    # A thief appears (the dark patch) and everything else drifts very slightly
+    generator = FakeGenerator([png_of(97, 480, 360, box=[600, 300, 800, 900], inner=20)])
     generator.width, generator.height = 480, 360
 
-    edited = Painter(generator, str(tmp_path), "Ink", confine=False).edit(str(base), "Remove the sword.", [sword])
+    edited = Painter(generator, str(tmp_path), "Ink", confine=False).edit(str(base), "Add a thief.")
 
-    call, = generator.calls
-    assert call["mask"] is None and call["init"] is None and call["refs"] == [str(base)]
     result = QImage(edited)
-    assert result.pixelColor(180, 135).value() == 20 and result.pixelColor(10, 10).value() == 100
+    assert result.pixelColor(336, 216).value() == 20 and result.pixelColor(40, 40).value() == 100
+
+
+def test_a_separate_editor_makes_the_edits_and_the_painter_paints(tmp_path):
+    base = tmp_path / "base.png"
+    base.write_bytes(png_of(100))
+    painter, editor = FakeGenerator([png_of(50)]), FakeGenerator([png_of(100, box=[0, 0, 500, 500], inner=200)])
+
+    p = Painter(painter, str(tmp_path), "Ink", confine=False, editor=editor)
+    p.paint("A cellar.")
+    p.edit(str(base), "Open the window.")
+
+    assert [c["prompt"] for c in painter.calls] == ["Ink. A cellar."]
+    assert [c["prompt"] for c in editor.calls] == ["Ink. Open the window. Keep everything else exactly the same."]
+
+
+@pytest.mark.parametrize("memory, editor", [(32 << 30, "qwen-image"), (16 << 30, ""), (0, "")])
+def test_an_editor_runs_only_with_the_memory_for_it(monkeypatch, memory, editor):
+    monkeypatch.setattr(runtime, "total_memory", lambda: memory)
+    assert runtime.choose_editor("mage-flow", progress=lambda msg: None) == editor
+    assert runtime.choose_editor("flux2-klein", progress=lambda msg: None) == ""
 
 
 def test_painter_retries_an_edit_that_changed_nothing(tmp_path):
@@ -320,7 +445,8 @@ def test_painter_retries_an_edit_that_changed_nothing(tmp_path):
 
     edited = Painter(generator, str(tmp_path), "Ink", seed=7).edit(str(base), "Open the window.", attempts=2)
 
-    assert [c["seed"] for c in generator.calls] == [7, 8] and generator.calls[0]["mask"] is None
+    first, second = [c["seed"] for c in generator.calls]
+    assert second == first + 1 and generator.calls[0]["mask"] is None
     assert open(edited, "rb").read() == png_of(100, box=[0, 0, 500, 500], inner=200)
 
 

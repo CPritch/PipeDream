@@ -9,6 +9,7 @@ import pytest
 from pipedream import games
 from pipedream.director import NO_CHANGE, Description, Finding, Verdict
 from pipedream.engine import PipeDream, session_name
+from pipedream.runtime import PROFILES
 from pipedream.world import World
 
 MOCK_GAME = Path(games.__file__).parent / "mock_game.py"
@@ -22,8 +23,8 @@ class FakePainter:
     """Stands in for the image model: every picture is an empty file named after what was asked for."""
 
     def __init__(self, folder, delay=None):
-        self.folder, self.delay, self.edits = Path(folder), delay, True
-        self.painted, self.edited = [], []
+        self.folder, self.delay, self.edits, self.confine = Path(folder), delay, True, True
+        self.painted, self.edited, self.kept = [], [], []
         self.removed = {}  # picture -> things edited out of it (or out of the pictures it was made from)
 
     def paint(self, prompt, seed=None):
@@ -32,8 +33,10 @@ class FakePainter:
         self.painted.append(prompt)
         return self._file(f"paint{len(self.painted)}")
 
-    def edit(self, image, instruction, boxes=(), min_change=None, attempts=1, first_attempt=0):
+    def edit(self, image, instruction, boxes=(), min_change=None, attempts=1, first_attempt=0, around=None, spread=True,
+             keep=()):
         self.edited.append((Path(image).name, instruction, boxes))
+        self.kept.append(list(keep))
         if "nothing" in instruction:
             return None
         path = self._file(f"edit{len(self.edited)}")
@@ -58,8 +61,10 @@ def stub_ai(engine, tmp_path, changes=None, delay=None, visible=("rug", "lamp", 
     engine.director.assess = lambda place, text, command: changes.get(command, NO_CHANGE)
     engine.director.locate = lambda text: None
     painter = FakePainter(tmp_path, delay)
+    # Found by the game's full name too ("oriental rug" for "rug")
     engine.director.find = lambda image, thing: Finding([[100, 200, 300, 400]], "wooden floor") \
-        if thing in visible and thing not in painter.removed.get(Path(image).name, set()) else Finding([])
+        if (thing in visible or thing.split()[-1] in visible) and thing not in painter.removed.get(Path(image).name, set()) else Finding([])
+    engine.director.sees = lambda image, thing: bool(engine.director.find(image, thing).boxes)  # whatever find is now
     engine.painter = painter
     return painter
 
@@ -207,13 +212,39 @@ def test_changes_in_a_place_edit_its_picture(tmp_path):
 
     assert painter.edited == [
         ("paint1.png", "Remove the lamp, leaving only bare wooden floor where it was.", [[100, 200, 300, 400]]),
-        ("edit1.png", "Drag the rug aside, revealing a trap door.", [[100, 200, 300, 400]]),
+        ("edit1.png", "Drag the oriental rug aside, revealing a trap door.", [[100, 200, 300, 400]]),  # its full name
         ("edit2.png", "Place a sword on the floor.", []),
         ("edit3.png", "Change nothing at all.", [])]
     living_room = engine.world.current
-    assert [e["target"] for e in living_room.edits] == ["lamp", "rug", "sword"]
+    assert [e["target"] for e in living_room.edits] == ["lamp", "oriental rug", "sword"]  # as the game calls it
     assert Path(living_room.image).name == "edit3.png"
     assert [Path(p).name for p in shown] == ["paint1.png", "edit1.png", "edit2.png", "edit3.png", "edit3.png"]
+
+
+def test_a_whole_picture_editor_changes_things_the_finder_cannot_place(tmp_path):
+    engine = PipeDream(["zork1.z3"], cache_dir=tmp_path)
+    painter = stub_ai(engine, tmp_path, changes={
+        "open trap door": Verdict("change", "trap door", "Open the trap door."),
+        "take leaflet": Verdict("remove", "leaflet", "Remove the leaflet."),  # still nothing to remove
+    })
+    painter.confine = False
+
+    feed(engine, [(None, LIVING_ROOM), ("open trap door", "The door reluctantly opens."), ("take leaflet", "Taken.")])
+
+    assert painter.edited == [("paint1.png", "Open the trap door.", [])]
+    assert [e["target"] for e in engine.world.current.edits] == ["trap door"]
+
+
+def test_a_separate_editor_makes_the_edits(tmp_path):
+    engine = PipeDream(["zork1.z3"], cache_dir=tmp_path, image_url="http://painter", image_model="mage-flow",
+                       edit_url="http://editor", editor="qwen-image")
+
+    assert engine.painter.generator.base_url == "http://painter"
+    assert engine.painter.editor.base_url == "http://editor"
+    assert engine.painter.editor.sampling == PROFILES["qwen-image"].sampling
+    assert not engine.painter.confine  # Qwen-Image-2.1 keeps the rest of the picture by itself
+    alone = PipeDream(["zork1.z3"], cache_dir=tmp_path, image_url="http://painter", image_model="mage-flow")
+    assert alone.painter.editor is alone.painter.generator and alone.painter.confine
 
 
 def test_darkness_is_shown_as_darkness_and_light_finds_the_place(tmp_path):
@@ -371,7 +402,7 @@ def test_an_edit_that_should_reveal_something_is_retried_until_it_does(tmp_path)
     def find(image, thing):
         looks.append((Path(image).name, thing))
         # The first edit (edit1) shows no trap door; the second one (edit2) does
-        return Finding([[1, 2, 3, 4]], "floor") if thing == "rug" or Path(image).name == "edit2.png" else Finding([])
+        return Finding([[1, 2, 3, 4]], "floor") if thing == "oriental rug" or Path(image).name == "edit2.png" else Finding([])
 
     engine.director.find = find
     feed(engine, [(None, LIVING_ROOM), ("move rug", "The rug is moved aside.")])
@@ -389,6 +420,57 @@ def test_a_removal_that_repaints_the_thing_is_dropped(tmp_path):
 
     assert len(painter.edited) == 2  # tried twice with different seeds
     assert Path(engine.world.current.image).name == "paint1.png" and engine.world.current.edits == []
+
+
+def test_a_change_that_loses_the_thing_is_tried_again(tmp_path):
+    engine = PipeDream(["zork1.z3"], cache_dir=tmp_path)
+    painter = stub_ai(engine, tmp_path, changes={"open case": Verdict("change", "case", "Open the case.")})
+    # The first try deletes the trophy case (edit1 has none); the second opens it
+    engine.director.find = lambda image, thing: Finding([] if Path(image).name == "edit1.png" else [[1, 2, 3, 4]], "floor")
+
+    feed(engine, [(None, LIVING_ROOM), ("open case", "Opened.")])
+
+    assert [e[1] for e in painter.edited] == ["Open the trophy case."] * 2
+    assert Path(engine.world.current.image).name == "edit2.png"
+
+
+def test_earlier_changes_are_kept_when_something_else_changes(tmp_path):
+    engine = PipeDream(["zork1.z3"], cache_dir=tmp_path)
+    painter = stub_ai(engine, tmp_path, changes={
+        "move rug": Verdict("change", "rug", "Replace the rug with bare floor and a trap door."),
+        "open trap door": Verdict("change", "trap door", "Open the trap door."),
+        "open case": Verdict("change", "case", "Open the case.")})
+    where = {"oriental rug": [0, 600, 1000, 1000], "trap door": [300, 700, 600, 850], "trophy case": [300, 300, 600, 700]}
+    engine.director.find = lambda image, thing: Finding([where[thing]], "floor") if thing in where else Finding([])
+
+    feed(engine, [(None, LIVING_ROOM), ("move rug", "Moved."), ("open trap door", "Opened."), ("open case", "Opened.")])
+
+    # The open trap door stays as it is when the case opens; the rug's place is just floor now
+    assert painter.kept == [[], [], [where["trap door"]]]
+    assert engine.world.current.edits[-1]["boxes"] == [where["trophy case"]]
+
+
+def test_a_change_the_picture_already_shows_is_not_made_again(tmp_path):
+    engine = PipeDream(["zork1.z3"], cache_dir=tmp_path)
+    painter = stub_ai(engine, tmp_path, changes={"open window": Verdict("change", "window", "Open the window.")})
+
+    # Closed from inside, out of sight, then opened again from here
+    feed(engine, [(None, "Behind House\nYou are behind the white house."), ("open window", "Opened."), ("open window", "Opened.")])
+
+    assert len(painter.edited) == 1 and Path(engine.world.current.image).name == "edit1.png"
+
+
+def test_a_removal_takes_one_thing_and_ignores_others_like_it(tmp_path):
+    engine = PipeDream(["zork1.z3"], cache_dir=tmp_path)
+    painter = stub_ai(engine, tmp_path, changes={"take painting": Verdict("remove", "painting", "Remove the painting.")})
+    taken, other = [400, 300, 600, 550], [40, 250, 140, 530]
+    # The finder sees the painting on the far wall first, and another one on a side wall; only that one stays
+    engine.director.find = lambda image, thing: Finding([taken, other] if Path(image).name == "paint1.png" else [other], "wall")
+
+    feed(engine, [(None, "Gallery\nThis is an art gallery."), ("take painting", "Taken.")])
+
+    assert painter.edited == [("paint1.png", "Remove the painting, leaving only bare wall where it was.", [taken])]
+    assert Path(engine.world.current.image).name == "edit1.png"
 
 
 def test_news_is_judged_one_line_at_a_time(tmp_path):

@@ -1,7 +1,7 @@
 import pytest
 
-from pipedream.gametext import (apply_landmarks, clean_prompt, command_object, find_title, from_title, has_no_visible_effect, is_dark, unwrap,
-                                without_possessions)
+from pipedream.gametext import (apply_landmarks, clean_prompt, command_object, find_title, from_title, full_name,
+                                has_no_visible_effect, is_dark, underground, unwrap, without_possessions)
 
 
 def test_unwrap_joins_only_lines_the_game_wrapped():
@@ -104,6 +104,23 @@ def test_command_object(command, thing):
     assert command_object(command) == thing
 
 
+LIVING_ROOM = ("Living Room\nYou are in the living room. There is a doorway to the east, a wooden door with strange "
+               "gothic lettering to the west, which appears to be nailed shut, a trophy case, and a large oriental rug "
+               "in the center of the room.\nAbove the trophy case hangs an elvish sword of great antiquity.")
+
+
+@pytest.mark.parametrize("thing, text, name", [
+    ("case", LIVING_ROOM, "trophy case"), ("rug", LIVING_ROOM, "oriental rug"), ("sword", LIVING_ROOM, "elvish sword"),
+    ("door", LIVING_ROOM, "wooden door"), ("door", LIVING_ROOM + " A trap door is open.", "door"),  # no telling which
+    ("trap door", LIVING_ROOM, "trap door"), ("lamp", LIVING_ROOM, "lamp"), ("", LIVING_ROOM, ""),
+    ("troll", "A nasty-looking troll, brandishing a bloody axe, blocks the way.", "nasty-looking troll"),
+    ("painting", "Fortunately, there is still one chance for you to be a vandal, for on the far wall is a painting of "
+                 "unparalleled beauty. Most of the paintings have been stolen.", "painting"),
+])
+def test_full_name(thing, text, name):
+    assert full_name(thing, text) == name
+
+
 @pytest.mark.parametrize("prompt, described", [
     ("A white house, all windows boarded.", "A two-storey farmhouse with a grey roof, all windows boarded."),
     ("Behind the white house, a path.", "Behind the two-storey farmhouse with a grey roof, a path."),
@@ -112,3 +129,14 @@ def test_command_object(command, thing):
 ])
 def test_apply_landmarks(prompt, described):
     assert apply_landmarks(prompt, {"white house": "a two-storey farmhouse with a grey roof"}) == described
+
+
+@pytest.mark.parametrize("prompt, cleaned", [
+    ("A chasm's edge under open sky, with a narrow passage.", "A chasm's edge, with a narrow passage."),
+    ("An art gallery with tall windows and empty frames. Paintings hang in the dim light.",
+     "An art gallery and empty frames. Paintings hang in the dim light."),
+    ("A cellar. Stars glitter overhead.", "A cellar."),
+    ("A damp cellar with a ramp.", "A damp cellar with a ramp."),
+])
+def test_underground(prompt, cleaned):
+    assert underground(prompt) == cleaned
