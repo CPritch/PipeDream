@@ -11,8 +11,8 @@ from pathlib import Path
 import pexpect
 from pipedream import __version__
 from pipedream.director import Director, Finding
-from pipedream.gametext import (apply_landmarks, command_object, find_title, from_title, has_no_visible_effect, is_dark, unwrap,
-                                without_possessions)
+from pipedream.gametext import (apply_landmarks, command_object, find_title, from_title, full_name, has_no_visible_effect,
+                                is_dark, unwrap, without_possessions)
 from pipedream.imagegen import REMOVAL_CHANGE, ImageGenerator, Painter
 from pipedream.runtime import LocalBackends, PROFILES, DEFAULT_PROFILE
 from pipedream.world import DEFAULT_CACHE_DIR, World
@@ -36,6 +36,14 @@ def _overlapping(boxes, originals):
                 return True
     return False
 
+def _changed_before(edits, target):
+    """Where things changed earlier are (an opened trap door), to be left as they are when something else changes.
+
+    Not what was replaced ("Replace the rug with bare floor..."): that's floor now, and anything can go there.
+    """
+    return [box for e in edits if e.get("kind") == "change" and e["target"] != target
+            and not e["edit"].startswith("Replace") for box in e.get("boxes", [])]
+
 def session_name(argv, style):
     """A folder name for one game and art style: readable, and short enough for Windows paths."""
     game = re.sub(r"[^a-zA-Z0-9]+", "-", os.path.basename(argv[-1]) if argv else "game").strip("-")[:40]
@@ -44,7 +52,7 @@ def session_name(argv, style):
 
 class PipeDream:
     def __init__(self, command, style=None, clear_cache=False, cache_dir=None, llm_url=None, image_url=None,
-                 image_model=DEFAULT_PROFILE, size=(768, 576)):
+                 image_model=DEFAULT_PROFILE, size=(768, 576), edit_url=None, editor=""):
         # Keep the argv list intact so paths with spaces survive the trip to pexpect
         self.argv = shlex.split(command) if isinstance(command, str) else list(command)
         self.command = shlex.join(self.argv)
@@ -59,11 +67,13 @@ class PipeDream:
             self.world.reset()
 
         profile = PROFILES[image_model]
+        editing = PROFILES[editor] if edit_url and editor else profile  # the model that makes the edits
         self.director = Director(llm_url)
         # PIPEDREAM_SEED fixes the image seed, so a replayed game paints comparable pictures
         self.painter = Painter(ImageGenerator(image_url, profile.sampling, *size), str(self.world.images), style,
-                               edits=profile.edits, seed=int(os.getenv("PIPEDREAM_SEED", "-1")),
-                               confine=profile.confine_edits)
+                               edits=editing.edits, seed=int(os.getenv("PIPEDREAM_SEED", "-1")),
+                               confine=editing.confine_edits,
+                               editor=ImageGenerator(edit_url, editing.sampling, *size) if editing is not profile else None)
 
         self.custom_print = print
         self.custom_input = input
@@ -263,7 +273,7 @@ class PipeDream:
             verdict = self.director.assess(place, line, "(comes back here)")
             if scene_id != self.latest_scene:
                 return  # the player has moved on; a visitor is only worth painting while they're here
-            if verdict.kind == "add" and verdict.target and self.director.find(image, verdict.target).boxes:
+            if verdict.kind == "add" and verdict.target and self.director.sees(image, verdict.target):
                 pass  # already in the picture ("There is a bloody axe here" where the troll dropped it)
             elif verdict.kind in ("change", "add", "remove") and self.painter.edits:
                 self.report_status("Generating Image...")
@@ -279,7 +289,7 @@ class PipeDream:
             return self.report_status("Ready")
         # The player's own words name the thing best; the director's guess can drift ("wooden door" for "trap door").
         # Start looking for it now, so the picture is searched while the director decides what happened.
-        acted_on = command_object(command)
+        acted_on = full_name(command_object(command), place.text)
         search = self.finder.submit(self.director.find, place.image, acted_on) if acted_on and self.painter.edits else None
         verdict = self.director.assess(place, text, command)
         if verdict.kind == "dark":
@@ -292,11 +302,21 @@ class PipeDream:
         self.report_status("Generating Image...")
         target = acted_on or verdict.target
         found = search.result() if search else None
-        image, instruction = self._edit(place.image, verdict.kind, verdict.edit, target, found)
+        # By the game's full name in the instruction too: told to "open the case", the model adds a chest
+        edit, short = verdict.edit, command_object(command)
+        if acted_on and short and acted_on != short:
+            edit = re.sub(rf"\bthe {re.escape(short)}\b", f"the {acted_on}", edit)
+        last = next((e for e in reversed(place.edits) if e["target"] == target), None)
+        if last and last["edit"] == edit:
+            # The picture shows it already: the trap door slammed shut out of sight, and has just been opened again
+            print("   > Already shown.")
+            return self._show(scene_id, place.image)
+        keep = _changed_before(place.edits, target)
+        image, instruction, boxes = self._edit(place.image, verdict.kind, edit, target, found, keep=keep)
         if image and verdict.expect and not self.director.find(image, verdict.expect).boxes:
             # The edit was meant to reveal something the story now depends on (the trap door): one more go
             print(f"   > No {verdict.expect} to be seen yet, trying again")
-            retry = self._edit(place.image, verdict.kind, verdict.edit, target, found, first_attempt=1)[0]
+            retry = self._edit(place.image, verdict.kind, edit, target, found, first_attempt=1, keep=keep)[0]
             if retry and self.director.find(retry, verdict.expect).boxes:
                 image = retry
             else:
@@ -304,15 +324,16 @@ class PipeDream:
         if image is None:
             return self.report_status("Ready")
         place.image, place.visitors = image, {}
-        place.edits.append({"kind": verdict.kind, "edit": instruction, "target": target})
+        place.edits.append({"kind": verdict.kind, "edit": instruction, "target": target, "boxes": boxes})
         self.world.save()
         self._show(scene_id, place.image)
 
-    def _edit(self, image, kind, instruction, target, found=None, first_attempt=0):
-        """Apply an edit, confined to where the target is in the picture.
+    def _edit(self, image, kind, instruction, target, found=None, first_attempt=0, keep=()):
+        """Apply an edit, confined to where the target is in the picture, and leaving `keep` (boxes) as it is.
 
         Changes and removals need their target in the picture; only an addition ("a thief is here") may repaint
-        the whole picture. Returns (new picture, or None if nothing was done or it made no difference, instruction).
+        the whole picture. Returns (new picture, or None if nothing was done or it made no difference, instruction,
+        the boxes it was made at).
         """
         if kind == "add":
             found = Finding([])
@@ -320,27 +341,44 @@ class PipeDream:
             found = self.director.find(image, target) if target else Finding([])
         if kind != "add" and not found.boxes and target in _ALSO_CALLED:
             found = self.director.find(image, _ALSO_CALLED[target])  # "take lamp" when the picture shows a lantern
-        if kind != "add" and not found.boxes:
+        # A model that edits the whole picture can still make a change the finder can't place (a trap door it
+        # can't make out); there's nothing to remove that can't be seen
+        if not found.boxes and (kind == "remove" or (kind == "change" and self.painter.confine)):
             print(f"   > No {target or 'target'} in the picture to {'remove' if kind == 'remove' else 'change'}.")
-            return None, instruction
+            return None, instruction, []
+        if kind != "add":
+            # One thing changes: the finder's best match. The other paintings it saw in the gallery stay, and
+            # finding them again after a removal doesn't mean the one taken is still there.
+            found = Finding(found.boxes[:1], found.surface)
         if kind == "remove":
             # Naming what's left, not just what goes, stops the model painting the thing straight back in
             instruction = f"Remove the {target}, leaving only bare {found.surface or 'surroundings'} where it was."
         print(f"   > Edit: {instruction}" + (f" (at the {target})" if found.boxes else ""))
-        if kind != "remove":
-            edited = self.painter.edit(image, instruction, found.boxes, first_attempt=first_attempt)
+        if kind == "add" or not found.boxes or instruction.startswith("Replace"):
+            edited = self.painter.edit(image, instruction, found.boxes, first_attempt=first_attempt, keep=keep)
             if edited is None:
                 print("   > The edit made no visible difference, so it was dropped.")
-            return edited, instruction
+            return edited, instruction, found.boxes
+        if kind == "change":
+            # A change leaves the thing there: asked to open the trophy case, the model can delete it instead
+            for attempt in (first_attempt, first_attempt + 1):
+                edited = self.painter.edit(image, instruction, found.boxes, first_attempt=attempt, keep=keep)
+                if edited and self.director.find(edited, target).boxes:
+                    return edited, instruction, found.boxes
+                print(f"   > {'The ' + target + ' has gone' if edited else 'The edit made no visible difference'}"
+                      + (", trying again" if attempt == first_attempt else ", so it was dropped."))
+            return None, instruction, []
         # A removal can repaint the thing in place ("Remove the sword" painting a new sword), which a pixel check
         # can't tell from success, so look for it again
         for attempt in (first_attempt, first_attempt + 1):
-            edited = self.painter.edit(image, instruction, found.boxes, REMOVAL_CHANGE, first_attempt=attempt)
+            # Only just round the thing: the model may take the trophy beside the lamp too
+            edited = self.painter.edit(image, instruction, found.boxes, REMOVAL_CHANGE, first_attempt=attempt,
+                                       around=0.15, spread=False)
             if edited and not _overlapping(self.director.find(edited, target).boxes, found.boxes):
-                return edited, instruction
+                return edited, instruction, found.boxes
             print(f"   > {'The ' + target + ' is still there' if edited else 'The edit made no visible difference'}"
                   + (", trying again" if attempt == first_attempt else ", so it was dropped."))
-        return None, instruction
+        return None, instruction, []
 
     def _repaint(self):
         place = self.world.current
@@ -349,8 +387,12 @@ class PipeDream:
         print(f"   > Repainting {place.name}")
         self.report_status("Generating Image...")
         image = place.base = self.painter.paint(place.prompt, seed=-1)
+        done = []
         for edit in place.edits:
-            image = self._edit(image, edit.get("kind", "change"), edit["edit"], edit["target"])[0] or image
+            edited, _, boxes = self._edit(image, edit.get("kind", "change"), edit["edit"], edit["target"],
+                                          keep=_changed_before(done, edit["target"]))
+            image = edited or image
+            done.append({**edit, "boxes": boxes})
         place.image, place.visitors = image, {}
         self.world.save()
         self._show(self.latest_scene, image)
@@ -392,7 +434,8 @@ def main():
     with LocalBackends(args.llm_url, args.image_url, args.image_model).start() as backends:
         engine = PipeDream(args.game_command, style=args.style, clear_cache=args.clear_cache,
                            llm_url=backends.llm_url, image_url=backends.image_url,
-                           image_model=backends.profile, size=args.size)
+                           image_model=backends.profile, size=args.size,
+                           edit_url=backends.edit_url, editor=backends.editor)
         engine.start()
 
 if __name__ == "__main__":

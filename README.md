@@ -22,15 +22,15 @@ Launch the GUI without arguments to play the internal mock game.
 pipedream-gui
 ```
 
-The first launch downloads the AI models and the local inference servers into your user data folder (`~/.local/share/pipedream` on Linux), then prepares the image model for your GPU. That's up to 11 GB of downloads depending on the model, ending up as 7–8 GB on disk. Downloads use parallel connections, are checked against a pinned SHA-256, and resume where they left off if interrupted.
+The first launch downloads the AI models and the local inference servers into your user data folder (`~/.local/share/pipedream` on Linux), then prepares the image model for your GPU. That's up to 11 GB of downloads depending on the model, ending up as 7–8 GB on disk, plus another 11 GB for the editing model on machines with 32 GB of RAM (see below). Downloads use parallel connections, are checked against a pinned SHA-256, and resume where they left off if interrupted.
 
 ### Requirements
 
-* A GPU with **8 GB of VRAM** and Vulkan drivers (NVIDIA, AMD or Intel), and 16 GB of RAM (recommended).
+* A GPU with **8 GB of VRAM** and Vulkan drivers (NVIDIA, AMD or Intel), and 16 GB of RAM (recommended). With 32 GB of RAM, changes to a place are drawn by a second, much better editing model.
 * Tested on Linux x86_64. Windows (Vulkan) and Apple Silicon (Metal) builds are wired up but not yet tested.
 * If you have a second GPU (e.g. a laptop's integrated graphics), the scene-analysis model runs there; otherwise it runs on the CPU.
 
-The game never waits for a picture: you can keep typing while one paints, and pictures for scenes you've already left are skipped. On an RTX 5060 Laptop GPU with the default model, a new place appears about 4.5 s after you press Enter (about 2.5 s to read the scene, 2 s to paint it), a change to the current place takes 6–8 s (finding what changed in the picture, then repainting just that), and a place you've seen before appears instantly.
+The game never waits for a picture: you can keep typing while one paints, and pictures for scenes you've already left are skipped. On an RTX 5060 Laptop GPU with the default model, a new place appears about 4.5 s after you press Enter (about 2.5 s to read the scene, 2 s to paint it), a change to the current place takes about 20–25 s (finding what changed in the picture, then repainting just that; 6–8 s with less than 32 GB of RAM, but far less reliably), and a place you've seen before appears instantly.
 
 ### Image models
 
@@ -38,11 +38,13 @@ Pick one with `--image-model` and set the size with `--size` (default `768x576`)
 
 | `--image-model` | Look | CUDA | Vulkan | Edits changes | Licence |
 |---|---|---|---|---|---|
-| `mage-flow` (default) | Oil-painterly, very faithful to the scene | ~1.8 s | not yet* | yes, ~4 s | MIT |
-| `flux2-klein` | Vivid digital painting | ~4.4 s | ~6.3 s | yes | Apache 2.0 |
-| `qwen-image` | Darkest and moodiest | ~12 s | ~17 s | no | Non-commercial |
+| `mage-flow` (default) | Oil-painterly, very faithful to the scene | ~1.8 s | not yet* | with `qwen-image`, ~18 s† | MIT |
+| `flux2-klein` | Vivid digital painting | ~4.4 s | ~6.3 s | yes, ~8 s | Apache 2.0 |
+| `qwen-image` | Darkest and moodiest | ~12 s | ~17 s | yes, ~17 s | Non-commercial |
 
 \* stable-diffusion.cpp's Vulkan backend currently renders Mage-Flow as noise, so PipeDream needs a CUDA build of `sd-server` for it (see `PIPEDREAM_SD_SERVER` below). Without one it falls back to `flux2-klein` and says so. The bundled servers are Vulkan builds.
+
+† Mage-Flow paints new places quickly but can't make most changes (it won't open a window or a trophy case). On machines with 32 GB of RAM, PipeDream runs Qwen-Image-2.1 alongside it, just for edits: its weights stay in RAM and stream to the GPU, so new places stay fast. With less memory, Mage-Flow makes the edits itself (~4 s).
 
 ```bash
 pipedream-gui --image-model qwen-image --size 640x480 adventure
@@ -159,4 +161,4 @@ PipeDream itself is MIT licensed. The models it downloads have their own licence
 * [Mage-Flow](https://github.com/microsoft/Mage) (default) is MIT.
 * [Qwen3-VL-4B](https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF), [Qwen3-VL-8B](https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF) and [Qwen3-4B](https://huggingface.co/unsloth/Qwen3-4B-GGUF) are Apache 2.0.
 * [FLUX.2 klein 4B](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B) and the [FLUX.2 small decoder](https://huggingface.co/black-forest-labs/FLUX.2-small-decoder) are Apache 2.0.
-* **Built with Qwen.** [Qwen-Image-2.1](https://huggingface.co/Qwen/Qwen-Image-2.1) and the [Viggle turbo](https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo) distillation (`--image-model qwen-image`) are released under the Qwen Research License Agreement, which permits **non-commercial use only**.
+* **Built with Qwen.** [Qwen-Image-2.1](https://huggingface.co/Qwen/Qwen-Image-2.1) and the [Viggle turbo](https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo) distillation (`--image-model qwen-image`, and the editing model alongside `mage-flow` on machines with 32 GB of RAM) are released under the Qwen Research License Agreement, which permits **non-commercial use only** (research or evaluation). Qwen is licensed under the Qwen RESEARCH LICENSE AGREEMENT, Copyright (c) 2026 Hangzhou Tongyi Laboratory Technology Co., Ltd.

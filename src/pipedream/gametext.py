@@ -88,6 +88,22 @@ def command_object(command):
     return "" if rest in ("", "all", "everything", "it", "them") else rest
 
 
+_NOT_NAMES = {"a", "an", "the", "this", "that", "your", "its", "his", "her", "their", "my", "one", "some", "no", "any",
+              "each", "every", "another", "other", "of", "and", "or", "with", "on", "in", "to", "is", "are"}
+
+
+def full_name(thing, text):
+    """What the game calls `thing` in full, if it calls it only one thing: "case" -> "trophy case" in the Living Room.
+
+    The player's word alone can find the wrong thing in the picture (a chest by the trap door for "case").
+    """
+    if not thing or " " in thing:
+        return thing
+    names = {m.lower() for m in re.findall(rf"\b([a-z][a-z-]* {re.escape(thing)})\b", text, re.IGNORECASE)
+             if m.split()[0].lower() not in _NOT_NAMES}
+    return names.pop() if len(names) == 1 else thing
+
+
 def is_dark(text, title=None):
     """Whether the player can't see. Inform games title a dark room "Darkness"."""
     return (title is None or title.lower() == "darkness") and bool(_DARK.search(text))
@@ -116,6 +132,18 @@ _DANGLING = re.compile(r"\b(is|are|was|were|lies|lie|leads?|goes|go|runs|opens|s
                        r"facing|faces|toward|towards|beyond|into|onto|to|from|of|with|at|near|holds|contains|has|features|shows|"
                        r"leading|running|winding|stretching|heading|going)[.!?]?$",
                        re.IGNORECASE)
+
+
+_OPEN_AIR = r"(?:sky|skies|sun|sunlight|daylight|moon|moonlight|stars|open air|fresh air|windows?)"
+
+
+def underground(prompt):
+    """A prompt for a place underground, without the sky or windows a small model gives it anyway ("a chasm's edge
+    under open sky", "a gallery with tall windows")."""
+    prompt = re.sub(rf"\s*,?\s*\b(?:under|beneath|below|in|into|to|towards?|against|through|with|of|by)\s+(?:the\s+|an?\s+)?"
+                    rf"(?:[\w-]+\s+){{0,2}}{_OPEN_AIR}\b", "", prompt, flags=re.IGNORECASE)
+    kept = [s for s in re.split(r"(?<=[.!?])\s+", prompt) if not re.search(rf"\b{_OPEN_AIR}\b", s, re.IGNORECASE)]
+    return " ".join(kept)
 
 
 def clean_prompt(prompt):

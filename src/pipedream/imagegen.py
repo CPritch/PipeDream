@@ -7,6 +7,15 @@ import zlib
 import requests
 
 DEFAULT_STYLE = "Oil painting, dark fantasy, atmospheric"
+# How far round its box, as a share of the box's size, a whole-picture edit is kept: enough for a trap door's lid,
+# not so far that opening the trophy case redraws the stairs beside it
+_AROUND = 0.3
+# A target narrower and shorter than this share of the picture is edited close up: a 30-pixel window is too small
+# for the model to open, but not once it fills a third of what the model sees
+_CLOSE_UP_BELOW = 0.3
+# A changed cell needs more than this many changed cells in its 3x3 neighbourhood (itself included) to count, so
+# specks go but a line (a sword's blade) stays
+_SPECK = 2
 
 
 class ImageGenerator:
@@ -54,11 +63,12 @@ class ImageGenerator:
 class Painter:
     """Paints places and edits their pictures, saving every picture under `folder`."""
 
-    def __init__(self, generator, folder, style=None, edits=True, seed=-1, confine=True):
+    def __init__(self, generator, folder, style=None, edits=True, seed=-1, confine=True, editor=None):
         self.generator = generator
+        self.editor = editor or generator  # the model that makes edits, when it isn't the one that paints
         self.folder = folder
         self.style = style or DEFAULT_STYLE
-        self.edits = edits  # whether the image model can edit a picture it's given
+        self.edits = edits  # whether the editing model can edit a picture it's given
         self.seed = seed
         self.confine = confine  # mask edits to their boxes, for models that otherwise redraw everything
 
@@ -66,24 +76,66 @@ class Painter:
         # Style first: the image model weights the start of the prompt most
         return self._save(self.generator.generate(f"{self.style}. {prompt}", seed=self.seed if seed is None else seed))
 
-    def edit(self, image, instruction, boxes=(), min_change=None, attempts=1, first_attempt=0):
-        """Edit a picture. With boxes (0-1000 coordinates, from the director), only those areas are repainted.
+    def edit(self, image, instruction, boxes=(), min_change=None, attempts=1, first_attempt=0, around=_AROUND,
+             spread=True, keep=()):
+        """Edit a picture. With boxes (0-1000 coordinates, from the director), only what's around those is kept
+        (plus, with `spread`, changes that run on from there), and nothing inside `keep` but the boxes themselves.
 
-        Returns the new picture's path, or None if no attempt changed the picture by at least `min_change`.
+        Returns the new picture's path, or None if no attempt changed the picture by at least `min_change`. A model
+        that edits the whole picture changes something whether or not it did what was asked (told to remove a
+        unicorn that isn't there, it removes something else), so its edits aren't measured; the director's checks
+        (is the lamp gone? is there a trap door?) are what count.
         """
         min_change = _VISIBLE_CHANGE if min_change is None else min_change
         # Without the style and "keep everything else", edits drift towards a brighter, cleaner look
         prompt = f"{self.style}. {instruction} Keep everything else exactly the same."
-        width, height = self.generator.width, self.generator.height
+        width, height = self.editor.width, self.editor.height
         mask = mask_png(width, height, boxes) if boxes and self.confine else None
+        # A fixed seed (for replays) still varies by edit: one seed's noise can suit a model badly (Qwen-Image-2.1
+        # with seed 7 grains every surface it repaints), and every edit would hit it
+        first = (self.seed + zlib.crc32(instruction.encode())) % 2 ** 31 if self.seed >= 0 else -1
         # The edit model sometimes returns the picture practically unchanged; another seed often takes
         for attempt in range(first_attempt, first_attempt + attempts):
-            seed = self.seed + attempt if self.seed >= 0 else -1
-            png = self.generator.generate(prompt, [image], seed=seed, init_image=image if mask else None, mask=mask)
-            png = paste(image, png, boxes) if mask else paste_changes(image, png)
-            if changed(image, png, boxes) >= min_change:
+            seed = first + attempt if first >= 0 else -1
+            if not mask and boxes and _small(boxes):
+                png = self._edit_close_up(prompt, image, boxes, seed)
+            else:
+                png = self.editor.generate(prompt, [image], seed=seed, init_image=image if mask else None, mask=mask)
+            if mask:
+                png = paste(image, png, boxes)
+            elif boxes:
+                # A model that edits the whole picture shows what the change did around the thing too (the stairs
+                # under an opened trap door), up to `around` (a share of the box's size), and anything it changed
+                # that runs on from there (the trap door's lid, past the box); elsewhere, it's drift
+                png = paste(image, png, boxes, pad=around, spread=spread, keep=keep)
+            else:
+                png = paste_changes(image, png)
+            if not self.confine or changed(image, png, boxes) >= min_change:
                 return self._save(png)
         return None
+
+    def _edit_close_up(self, prompt, image, boxes, seed):
+        """Edit an enlarged crop round the boxes, and return the whole picture with the crop put back."""
+        from PySide6.QtCore import QBuffer, Qt
+        from PySide6.QtGui import QImage, QPainter
+
+        picture = QImage(image).convertToFormat(QImage.Format_RGB32)
+        rect = _close_up(boxes, picture.width(), picture.height())
+        crop = os.path.join(self.folder, f"close-up-{os.urandom(8).hex()}.png")
+        picture.copy(rect).scaled(self.editor.width, self.editor.height, Qt.IgnoreAspectRatio,
+                                  Qt.SmoothTransformation).save(crop)
+        try:
+            edited = QImage.fromData(self.editor.generate(prompt, [crop], seed=seed))
+        finally:
+            os.remove(crop)
+        painter = QPainter(picture)
+        painter.drawImage(rect.topLeft(), edited.scaled(rect.width(), rect.height(), Qt.IgnoreAspectRatio,
+                                                        Qt.SmoothTransformation))
+        painter.end()
+        buffer = QBuffer()
+        buffer.open(QBuffer.WriteOnly)
+        picture.save(buffer, "PNG")
+        return bytes(buffer.data())
 
     def darkness(self):
         path = os.path.join(self.folder, "darkness.png")
@@ -106,6 +158,24 @@ class Painter:
 # measures far more (170+) than an object repainted in place (30-40).
 _VISIBLE_CHANGE = 45
 REMOVAL_CHANGE = 80
+
+
+def _small(boxes):
+    return (max(b[2] for b in boxes) - min(b[0] for b in boxes) < _CLOSE_UP_BELOW * 1000
+            and max(b[3] for b in boxes) - min(b[1] for b in boxes) < _CLOSE_UP_BELOW * 1000)
+
+
+def _close_up(boxes, width, height):
+    """A rectangle of the picture's shape round the boxes, three times their size (at least 40% of the picture)."""
+    from PySide6.QtCore import QRect
+
+    x1, y1 = min(b[0] for b in boxes) * width / 1000, min(b[1] for b in boxes) * height / 1000
+    x2, y2 = max(b[2] for b in boxes) * width / 1000, max(b[3] for b in boxes) * height / 1000
+    w = min(width, max(3 * (x2 - x1), 3 * (y2 - y1) * width / height, 0.4 * width))
+    h = w * height / width
+    left = min(max(0, (x1 + x2 - w) / 2), width - w)
+    top = min(max(0, (y1 + y2 - h) / 2), height - h)
+    return QRect(round(left), round(top), round(w), round(h))
 
 
 def changed(before_path, after_png, boxes=()):
@@ -131,8 +201,10 @@ def changed(before_path, after_png, boxes=()):
     return max(abs(a - b) for a, b in zip(cells(before), cells(after)))
 
 
-def paste(original_path, edited_png, boxes):
-    """The original picture with only the edited boxes taken from the edit, blended in at the edges.
+def paste(original_path, edited_png, boxes, pad=0.15, spread=False, keep=()):
+    """The original picture with only the edited boxes (plus `pad`) taken from the edit, blended in at the edges.
+    With `spread`, changes that run on from there are taken too, up to the box's own size again. Nothing is taken
+    inside `keep` except where it overlaps the boxes: opening the trophy case mustn't shut the trap door in front.
 
     The image model round-trips the whole picture through its VAE even when it only repaints the mask, which
     softens every pixel a little; over several edits that adds up, so everything outside the boxes is kept as is.
@@ -145,7 +217,11 @@ def paste(original_path, edited_png, boxes):
     if original.isNull() or edited.size() != original.size():
         return edited_png
     w, h = original.width(), original.height()
-    mask = QImage.fromData(mask_png(w, h, boxes)).convertToFormat(QImage.Format_Grayscale8)
+    mask = QImage.fromData(mask_png(w, h, boxes, pad)).convertToFormat(QImage.Format_Grayscale8)
+    if spread:
+        mask = _spread(mask, original, edited, boxes)
+    if keep:
+        mask = _keep(mask, boxes, keep)
     # Shrinking and regrowing the mask blurs its edges, so the edit fades into the original over ~12 px
     feathered = mask.scaled(max(1, w // 12), max(1, h // 12), Qt.IgnoreAspectRatio, Qt.SmoothTransformation).scaled(
         w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
@@ -159,6 +235,75 @@ def paste(original_path, edited_png, boxes):
     return bytes(buffer.data())
 
 
+def _changed_cells(original, edited, gw, gh, threshold=35):
+    """Which cells of a coarse grid an edit really changed: by colour, not brightness (a red rug and the brown floor
+    under it are about as bright as each other), and not on their own (a lone cell is noise, not something new)."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QImage
+
+    def cells(image):
+        small = image.convertToFormat(QImage.Format_RGB32).scaled(gw, gh, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+        return [small.pixelColor(x, y).getRgb()[:3] for y in range(gh) for x in range(gw)]
+
+    hot = [max(abs(x - y) for x, y in zip(a, b)) > threshold for a, b in zip(cells(original), cells(edited))]
+    return [on and sum(hot[yy * gw + xx] for yy in range(max(0, i // gw - 1), min(gh, i // gw + 2))
+                       for xx in range(max(0, i % gw - 1), min(gw, i % gw + 2))) > _SPECK for i, on in enumerate(hot)]
+
+
+def _spread(mask, original, edited, boxes):
+    """The mask, plus the changed cells joined to it, as far as the boxes doubled in size."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QImage, QPainter
+
+    gw, gh = 96, 72
+    hot = _changed_cells(original, edited, gw, gh)
+    small = mask.scaled(gw, gh, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+    inside = [small.pixelColor(i % gw, i // gw).value() > 127 for i in range(gw * gh)]
+    reach = [any(2 * b[0] - b[2] <= (i % gw + .5) * 1000 / gw <= 2 * b[2] - b[0] and
+                 2 * b[1] - b[3] <= (i // gw + .5) * 1000 / gh <= 2 * b[3] - b[1] for b in boxes) for i in range(gw * gh)]
+    todo, taken = [i for i in range(gw * gh) if inside[i]], set()
+    while todo:
+        i = todo.pop()
+        for yy in range(max(0, i // gw - 1), min(gh, i // gw + 2)):
+            for xx in range(max(0, i % gw - 1), min(gw, i % gw + 2)):
+                j = yy * gw + xx
+                if hot[j] and reach[j] and not inside[j] and j not in taken:
+                    taken.add(j)
+                    todo.append(j)
+    if not taken:
+        return mask
+    extra = QImage(gw, gh, QImage.Format_Grayscale8)
+    extra.fill(0)
+    for j in taken:
+        extra.setPixelColor(j % gw, j // gw, Qt.white)
+    grown = mask.copy()
+    painter = QPainter(grown)
+    painter.setCompositionMode(QPainter.CompositionMode_Lighten)
+    painter.drawImage(0, 0, extra.scaled(mask.width(), mask.height(), Qt.IgnoreAspectRatio, Qt.SmoothTransformation))
+    painter.end()
+    return grown
+
+
+def _keep(mask, boxes, keep):
+    from PySide6.QtCore import QRect, Qt
+    from PySide6.QtGui import QPainter
+
+    w, h = mask.width(), mask.height()
+
+    def rect(box):
+        return QRect(round(box[0] * w / 1000), round(box[1] * h / 1000), round((box[2] - box[0]) * w / 1000),
+                     round((box[3] - box[1]) * h / 1000))
+
+    kept = mask.copy()
+    painter = QPainter(kept)
+    for box in keep:
+        painter.fillRect(rect(box), Qt.black)
+    for box in boxes:  # the thing being edited is never kept, even where it overlaps something changed before
+        painter.drawImage(rect(box).topLeft(), mask.copy(rect(box)))
+    painter.end()
+    return kept
+
+
 def paste_changes(original_path, edited_png, threshold=35):
     """The original picture with only what an unconfined edit really changed (a thief it added), not the slight
     redrawing the model does everywhere else."""
@@ -170,12 +315,7 @@ def paste_changes(original_path, edited_png, threshold=35):
     if original.isNull() or edited.size() != original.size():
         return edited_png
     gw, gh = 96, 72  # compare coarse cells, so noise and texture don't count, only real changes
-
-    def cells(image):
-        small = image.convertToFormat(QImage.Format_Grayscale8).scaled(gw, gh, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-        return [small.pixelColor(x, y).value() for y in range(gh) for x in range(gw)]
-
-    hot = [abs(a - b) > threshold for a, b in zip(cells(original), cells(edited))]
+    hot = _changed_cells(original, edited, gw, gh, threshold)
     # Grow each changed cell by two in every direction, so the whole new object comes across, edges included
     grown = bytearray(gw * gh)
     for i, on in enumerate(hot):

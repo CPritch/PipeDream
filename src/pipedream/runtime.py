@@ -72,8 +72,10 @@ class ImageProfile(NamedTuple):
     devices: tuple = ()  # ggml device prefixes the model is known to render correctly on; empty means any
     edits: bool = True  # whether the model can edit a picture it's given, for changes within a place
     # Repaint only the box around what changes (Mage-Flow redraws whatever it's given); False for models that keep
-    # the rest of a picture intact by themselves (FLUX.2 klein)
+    # the rest of a picture intact by themselves (FLUX.2 klein, Qwen-Image-2.1)
     confine_edits: bool = True
+    # Another profile whose model makes this one's edits, as a second server, when there's the memory to run both
+    editor: str = ""
 
 
 FOUR_STEP = {"sample_method": "euler", "sample_steps": 4, "guidance": {"txt_cfg": 1.0}}
@@ -91,10 +93,10 @@ _QWEN3VL_4B_VISION = _hf("Qwen/Qwen3-VL-4B-Instruct-GGUF", "mmproj-Qwen3VL-4B-In
 # language model to download. Otherwise a profile names its own "director".
 # Timings are for a 768x576 scene on an RTX 5060 Laptop GPU.
 PROFILES = {
-    # Microsoft Mage-Flow Edit Turbo (MIT): ~1.8 s for a new scene, ~4 s for an edit. The edit model paints from text
-    # as well as the plain Turbo model does, so one model covers both. The published int8 weights only run on CUDA,
-    # so the bf16 weights are quantized to q8_0 locally. Even then sd.cpp's Vulkan backend renders Mage-Flow as
-    # noise (as of master-945, on NVIDIA and AMD alike), so it's CUDA-only for now.
+    # Microsoft Mage-Flow Edit Turbo (MIT): ~1.8 s for a new scene. It edits in ~4 s but can't open a window or a
+    # trophy case, so Qwen-Image-2.1 makes the edits where there's the memory for both. The published int8 weights
+    # only run on CUDA, so the bf16 weights are quantized to q8_0 locally. Even then sd.cpp's Vulkan backend renders
+    # Mage-Flow as noise (as of master-945, on NVIDIA and AMD alike), so it's CUDA-only for now.
     "mage-flow": ImageProfile({
         "diffusion": _hf("Comfy-Org/Mage-Flow", "diffusion_models/mage_flow_edit_turbo_bf16.safetensors",
                          8231536760, "29c3726ecd64afe149eef28af3e27b6b40de52646bfd16757a37da4b6fbcf288"),
@@ -103,8 +105,9 @@ PROFILES = {
         "llm": _hf("Qwen/Qwen3-VL-4B-Instruct-GGUF", "Qwen3VL-4B-Instruct-Q4_K_M.gguf",
                    2497281664, "66358cb18bb6b3b1b6675aa412c7a88ef01d228f481184d13668e5201c730a0a"),
         "director_vision": _QWEN3VL_4B_VISION,
-    }, FOUR_STEP, quantize="q8_0", devices=("CUDA",)),
-    # Qwen-Image-2.1 with Viggle's 6-step turbo (non-commercial), the moodiest look, ~12 s
+    }, FOUR_STEP, quantize="q8_0", devices=("CUDA",), editor="qwen-image"),
+    # Qwen-Image-2.1 with Viggle's 6-step turbo (non-commercial), the moodiest look, ~12 s. The best editor of the
+    # three by far (~17 s): it opens windows and trophy cases, and leaves the rest of the picture alone
     "qwen-image": ImageProfile({
         "diffusion": _hf("Viggle/Qwen-Image-2.1-viggle-turbo", "Qwen-Image-2.1-viggle-turbo-v0.3-6step-Q4_K_M.gguf",
                          4335931552, "047dd62db7c7a55e6bb796e89710cb31457e3b944e0f5f94d0ebe71d1b9c8cae"),
@@ -114,7 +117,7 @@ PROFILES = {
                    5027784800, "67d1659bfe71b89d50b45a4ad1a9e5b997e5bb16ce5da66a6a6167abd569e9e2"),
         "vision": _hf("Qwen/Qwen3-VL-8B-Instruct-GGUF", "mmproj-Qwen3VL-8B-Instruct-F16.gguf",
                       1159029824, "ca524100ebf825c9a870db1c580d03879e0da0ab2541697e2458e64891cf9d38"),
-    }, QWEN_TURBO, edits=False),
+    }, QWEN_TURBO, confine_edits=False),
     # FLUX.2 klein 4B (Apache 2.0) with BFL's small decoder, ~4.4 s
     "flux2-klein": ImageProfile({
         "diffusion": _hf("leejet/FLUX.2-klein-4B-GGUF", "flux-2-klein-4b-Q4_0.gguf",
@@ -131,6 +134,10 @@ PROFILES = {
 }
 DEFAULT_PROFILE = "mage-flow"
 FALLBACK_PROFILE = "flux2-klein"  # ~6 s on Vulkan
+
+# A second image server holds the editor's text encoder and weights in RAM (~11 GB for Qwen-Image-2.1). With the
+# director and the painter, that's ~19 GB in all: a 32 GB machine (which reports 30-31 GiB) is the least that copes.
+EDITOR_MIN_MEMORY = 28 << 30
 
 SERVER_BINARIES = {"sd": "sd-server", "llama": "llama-server"}
 CHUNK_SIZE = 64 << 20
@@ -266,7 +273,8 @@ def install_runtimes(progress=print):
     return paths
 
 
-def install_models(profile, paths, progress=print):
+def install_models(profile, paths, progress=print, prefix=""):
+    """Fetch a profile's models. Their paths are added to `paths` under their roles, with `prefix` (for an editor)."""
     paths = dict(paths)
     os.makedirs(MODELS_DIR, exist_ok=True)
     chosen = PROFILES[profile]
@@ -274,7 +282,7 @@ def install_models(profile, paths, progress=print):
         path = os.path.join(MODELS_DIR, item.name)
         quantized = os.path.splitext(path)[0] + f"-{chosen.quantize}.gguf" if role == "diffusion" and chosen.quantize else None
         if quantized and os.path.exists(quantized):
-            paths[role] = quantized
+            paths[prefix + role] = quantized
             continue
         # A matching size is enough here; the checksum was verified when the file was downloaded
         if not (os.path.exists(path) and os.path.getsize(path) == item.size):
@@ -282,7 +290,7 @@ def install_models(profile, paths, progress=print):
         if quantized:
             _quantize(paths["sd_cli"], path, quantized, chosen.quantize, progress)
             path = quantized
-        paths[role] = path
+        paths[prefix + role] = path
     return paths
 
 
@@ -308,6 +316,33 @@ def choose_profile(requested, devices, progress=print):
     return requested
 
 
+def total_memory():
+    """Physical memory in bytes, or 0 if it can't be told."""
+    try:
+        if sys.platform == "win32":
+            import ctypes
+
+            class MemoryStatus(ctypes.Structure):
+                _fields_ = [("length", ctypes.c_ulong), ("load", ctypes.c_ulong)] + [
+                    (name, ctypes.c_ulonglong) for name in ("total", "free", "page", "page_free", "virtual",
+                                                            "virtual_free", "extended")]
+
+            status = MemoryStatus(length=ctypes.sizeof(MemoryStatus))
+            return status.total if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)) else 0
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    except (AttributeError, OSError, ValueError):
+        return 0
+
+
+def choose_editor(profile, progress=print):
+    """The profile whose model edits this one's pictures on a server of its own, or "" for the model itself."""
+    editor = PROFILES[profile].editor
+    if editor and total_memory() < EDITOR_MIN_MEMORY:
+        progress(f"Not enough memory to edit pictures with {editor} as well, so {profile} will make the edits")
+        return ""
+    return editor
+
+
 def _die_with_parent():
     # Linux only: take the server down if PipeDream dies without cleaning up. The signal fires when the
     # spawning *thread* exits, so servers must be started from a thread that lives as long as the session.
@@ -322,6 +357,8 @@ class LocalBackends:
         self.llm_url = llm_url
         self.image_url = image_url
         self.profile = profile
+        self.edit_url = None  # a second image server for edits, when the profile has an editor
+        self.editor = ""  # the profile running there
         self.processes = []
         atexit.register(self.stop)
 
@@ -337,20 +374,21 @@ class LocalBackends:
         paths = install_runtimes(progress)
         if not self.image_url:
             self.profile = choose_profile(self.profile, list_devices(paths["sd"]), progress)
+            self.editor = choose_editor(self.profile, progress)
         paths = install_models(self.profile, paths, progress)
+        if self.editor:
+            paths = install_models(self.editor, paths, progress, prefix="editor_")
         gpus = list_devices(paths["llama"])
         # Image generation needs the big GPU. Give the LLM a second GPU if there is one (e.g. an iGPU), else the CPU.
         llm_device = os.getenv("PIPEDREAM_LLM_DEVICE") or (gpus[1] if len(gpus) > 1 else "none")
 
         if not self.image_url:
-            port = _free_port()
-            vision = ["--llm_vision", paths["vision"]] if "vision" in paths else []
-            self._spawn("sd-server", [
-                paths["sd"], "--listen-port", str(port),
-                "--diffusion-model", paths["diffusion"], "--vae", paths["vae"],
-                "--llm", paths["llm"], *vision, "--diffusion-fa",
-            ])
-            self.image_url = f"http://127.0.0.1:{port}"
+            self.image_url = self._sd_server("sd-server", paths)
+            if self.editor:
+                # The painter's weights fill the GPU, so the editor's stay in RAM and stream in. It has to leave the
+                # painter room to work (2 GiB): otherwise it keeps what it streamed, and the painter can't paint.
+                # Decoding in tiles saves a failed attempt to decode the whole picture in what's left.
+                self.edit_url = self._sd_server("sd-server-editor", paths, "editor_", "--max-vram", "-2", "--vae-tiling")
         if not self.llm_url:
             port = _free_port()
             sight = ["--mmproj", paths["director_vision"]] if "director_vision" in paths else []
@@ -364,13 +402,26 @@ class LocalBackends:
         progress("Loading AI models...")
         self._wait_ready(self.llm_url + "/health")
         self._wait_ready(self.image_url + "/sdcpp/v1/capabilities")
+        if self.edit_url:
+            self._wait_ready(self.edit_url + "/sdcpp/v1/capabilities")
         if self.processes:
             self._warm_up()
         return self
 
+    def _sd_server(self, name, paths, prefix="", *extra):
+        port = _free_port()
+        vision = ["--llm_vision", paths[prefix + "vision"]] if prefix + "vision" in paths else []
+        self._spawn(name, [
+            paths["sd"], "--listen-port", str(port),
+            "--diffusion-model", paths[prefix + "diffusion"], "--vae", paths[prefix + "vae"],
+            "--llm", paths[prefix + "llm"], *vision, "--diffusion-fa", *extra,
+        ])
+        return f"http://127.0.0.1:{port}"
+
     def _warm_up(self):
         # sd-server loads its weights on the first job. Queue a tiny one now so that happens while the game
         # starts and the director reads the opening, not after. The API is async, so this returns at once.
+        # Not the editor: a job there now would compete with the first picture for GPU memory, and fail it.
         try:
             requests.post(f"{self.image_url}/sdcpp/v1/img_gen", timeout=10, json={
                 "prompt": "warm up", "width": 256, "height": 256, "sample_params": {"sample_steps": 1}})

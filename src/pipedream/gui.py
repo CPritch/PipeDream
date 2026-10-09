@@ -56,7 +56,9 @@ class GameWorker(QObject):
             llm_url=self.backends.llm_url,
             image_url=self.backends.image_url,
             image_model=self.backends.profile,
-            size=self.size
+            size=self.size,
+            edit_url=self.backends.edit_url,
+            editor=self.backends.editor,
         )
         
         # HOOKS

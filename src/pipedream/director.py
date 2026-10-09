@@ -5,7 +5,7 @@ from typing import NamedTuple
 
 import requests
 
-from pipedream.gametext import clean_prompt, command_object
+from pipedream.gametext import clean_prompt, command_object, underground
 
 # llama-server constrains each reply to a JSON schema, so there's no free text to parse. Each question is kept
 # narrow because a 4B model answers one clear question far more reliably than a combined one.
@@ -62,6 +62,7 @@ DESIGN_LANDMARK = (
     "mention doors, windows, signs or anything seen from only one side. Start with 'a' or 'an'."
 )
 LOOK_SCHEMA = {"type": "object", "properties": {"look": {"type": "string", "maxLength": 240}}, "required": ["look"]}
+SEEN_SCHEMA = {"type": "object", "properties": {"visible": {"type": "boolean"}}, "required": ["visible"]}
 
 ASSESS_CHANGE = (
     "You are the visual director for a text adventure. The player is in a place that has already been painted. "
@@ -92,6 +93,9 @@ FIND = ('Locate the {thing} in the image. Answer in JSON: {{"bbox_2d": [x1, y1, 
         'stands on or hangs against, in two or three words, e.g. wooden floor or stone wall"}}. If there is no {thing}, '
         'answer {{}}.')
 
+# Asked to locate something, the grounding model nearly always boxes something; asked whether it's there, it can
+# say no (it boxed blood on a cave floor as "a bloody axe", but said there was no axe)
+SEES = 'Is there a {thing} in this picture? Answer in JSON: {{"visible": true or false}}.'
 LOCATE = (
     "You read a text adventure's latest reply. If it describes the place the player is in, answer with a short "
     "canonical name for that place (at most 4 words). Otherwise answer 'none'. Titles, banners, credits, "
@@ -149,7 +153,9 @@ def obvious_verdict(command, reply):
     refused = re.search(r"\b(already|locked|can't|cannot|won't|isn't|not|no)\b", reply)
     if words[0] == "open" and not refused and (reply == "opened." or re.search(r"\bopens?\b|\bopened\b", reply)):
         revealed = re.search(r"\breveal(?:s|ing)?\s+(.+?)[.!]", reply)  # "opens to reveal a rickety staircase"
-        return Verdict("change", thing, f"Open the {thing}" + (f", revealing {revealed[1]}." if revealed else "."),
+        # Plain "open the trophy case" leaves it looking much the same, or redraws it shut
+        return Verdict("change", thing, f"Open the {thing}" + (f", revealing {revealed[1]}." if revealed else
+                                                               " wide, swinging it fully open."),
                        _revealed_thing(revealed[1]) if revealed else "")
     if words[0] == "close" and not refused and (reply == "closed." or re.search(r"\bcloses?\b|\bclosed\b|\bshut\b", reply)):
         return Verdict("change", thing, f"Close the {thing}.")
@@ -158,9 +164,17 @@ def obvious_verdict(command, reply):
         # Painting what's there now works where "move the rug aside" leaves the rug in place
         return Verdict("change", thing, f"Replace the {thing} with bare floor and {revealed[1]}; the {thing} lies "
                                         f"crumpled at the edge.", _revealed_thing(revealed[1]))
-    if words[0] in ("put", "place") and reply == "done.":
-        item = re.sub(r"^(the|a|an)\s+", "", re.split(r"\s+(?:in|into|on|onto|inside|under)\s+", " ".join(words[1:]))[0])
-        return Verdict("change", thing, f"Place the {item} in the {thing}.")
+    if words[0] in ("put", "place") and reply == "done." and (
+            put := re.match(r"(?:the |an? )?(.+?)\s+(in|into|inside|on|onto|under)\s+", " ".join(words[1:]))):
+        # Asked to "place the painting in the case", the model fills the case with more of what's in it already;
+        # it has to be told to add something it can't see yet
+        item, where = put[1], put[2]
+        some = "some" if re.search(r"[^s]s$", item) else "an" if item[0] in "aeiou" else "a"
+        if where in ("in", "into", "inside"):
+            # Without "small enough to fit", the painting put in the trophy case came out bigger than the case
+            return Verdict("change", thing, f"Add {some} {item}, small enough to fit, standing inside the {thing}, among "
+                                            f"what is already there.")
+        return Verdict("change", thing, f"Add {some} {item} {'lying on' if where.startswith('on') else 'under'} the {thing}.")
     return None
 
 
@@ -206,6 +220,8 @@ class Director:
         if came_from and came_from.setting == "underground" and setting != "underground" and not climbing \
                 and not _OPEN_AIR.search(text):
             setting = "underground"
+        if setting == "underground" and not _OPEN_AIR.search(text):
+            prompt = underground(prompt) or prompt
         # A landmark is something seen from outside: the white house's look doesn't belong in its kitchen
         for landmark in (reply.get("landmarks") or []) if setting == "outdoors" else []:
             landmark = str(landmark).strip().lower()
@@ -252,6 +268,19 @@ class Director:
         boxes = [[int(n) for n in box] for box in re.findall(r"\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]", reply)]
         surface = re.search(r'"surface"\s*:\s*"([^"]*)"', reply)
         return Finding([b for b in boxes if b[0] < b[2] <= 1000 and b[1] < b[3] <= 1000][:3], surface[1] if surface else "")
+
+    def sees(self, image, thing):
+        """Whether `thing` is in the picture."""
+        with open(image, "rb") as f:
+            data = base64.b64encode(f.read()).decode()
+        content = [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{data}"}},
+                   {"type": "text", "text": SEES.format(thing=thing)}]
+        reply = self._chat([{"role": "user", "content": content}], max_tokens=20, temperature=0,
+                           response_format={"type": "json_schema", "json_schema": {"name": "reply", "schema": SEEN_SCHEMA}})
+        try:
+            return bool(json.loads(reply or "")["visible"])
+        except (ValueError, KeyError, TypeError):
+            return False
 
     def locate(self, text):
         """For games without room titles: the name of the place the text describes, or None."""
