@@ -302,7 +302,6 @@ class PipeDream:
             return self.report_status("Ready")
         self.report_status("Generating Image...")
         target = acted_on or verdict.target
-        found = search.result() if search else None
         # By the game's full name in the instruction too: told to "open the case", the model adds a chest
         edit, short = verdict.edit, command_object(command)
         if acted_on and short and acted_on != short:
@@ -312,13 +311,15 @@ class PipeDream:
             # The picture shows it already: the trap door slammed shut out of sight, and has just been opened again
             print("   > Already shown.")
             return self._show(scene_id, place.image)
+        found = search.result() if search else None
         keep = _changed_before(place.edits, target)
         image, instruction, boxes = self._edit(place.image, verdict.kind, edit, target, found, keep=keep)
-        if image and verdict.expect and not self.director.find(image, verdict.expect).boxes:
+        # Asked, not boxed: the finder misses stairs going down into the dark, which costs a needless second go
+        if image and verdict.expect and not self.director.sees(image, verdict.expect):
             # The edit was meant to reveal something the story now depends on (the trap door): one more go
             print(f"   > No {verdict.expect} to be seen yet, trying again")
             retry = self._edit(place.image, verdict.kind, edit, target, found, first_attempt=1, keep=keep)[0]
-            if retry and self.director.find(retry, verdict.expect).boxes:
+            if retry and self.director.sees(retry, verdict.expect):
                 image = retry
             else:
                 print("   > Keeping the first attempt")  # changed less, so the more faithful of two misses

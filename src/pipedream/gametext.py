@@ -165,7 +165,13 @@ def clean_prompt(prompt):
         sentence = re.sub(rf"\b(?:from\s+)?(?:the\s+)?{_DIRECTION}\s+to\s+(?:the\s+)?{_DIRECTION}\b", "", sentence,
                           flags=re.IGNORECASE)  # "running from east to west"
         sentence = re.sub(rf",?\s*\b{_DIRECTION}(?:ern)?-[a-z]+\b", "", sentence, flags=re.IGNORECASE)  # "east-facing"
+        # A list of directions goes whole: one at a time, "passages east and south visible" keeps its "and"
+        sentence = re.sub(rf"(?:\b(?:to|toward|towards|from|on|at)\s+(?:the\s+)?)?\b{_DIRECTION}(?:ern|ward|wards)?"
+                          rf"(?:\s*,\s*(?:and\s+)?(?:the\s+)?{_DIRECTION}|\s+(?:and|or)\s+(?:the\s+)?{_DIRECTION})+(?:ern|ward|wards)?\b",
+                          "", sentence, flags=re.IGNORECASE)
         sentence = _tidy(_COMPASS.sub("", sentence))
+        # "A passage to the north and a passage to the south" leaves two of the same, which get painted as two doors
+        sentence = re.sub(r"\ban? ([a-z]+) and an? \1\b", r"two \1s", sentence, flags=re.IGNORECASE)
         if _DANGLING.search(sentence) and "," in sentence:
             sentence = sentence[:sentence.rindex(",")] + "."  # "boarded windows, facing." loses only its last clause
         if len(sentence.split()) >= 2 and not _DANGLING.search(sentence):
